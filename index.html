@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>極簡影片運動追蹤系統</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-container">
+    <header class="app-header">
+      <h1>極簡影片運動追蹤系統</h1>
+      <span id="status" class="status-badge">請載入影片以開始操作</span>
+    </header>
+
+    <section class="toolbar">
+      <div class="tool-group">
+        <label for="videoInput" class="btn btn-file">📂 選擇影片</label>
+        <input type="file" id="videoInput" accept="video/*" hidden>
+      </div>
+
+      <div class="tool-group">
+        <button id="btnCalibrate" class="btn" disabled>1. 定標 (點兩點)</button>
+        <div class="input-with-unit">
+          <input type="number" id="scaleLength" value="1.0" step="0.1" min="0.01" title="真實長度">
+          <span>m</span>
+        </div>
+      </div>
+
+      <div class="tool-group">
+        <button id="btnTrack" class="btn" disabled>2. 選取目標中心</button>
+        <button id="btnProcess" class="btn btn-primary" disabled>3. 開始自動追蹤</button>
+        <button id="btnExport" class="btn btn-success" disabled>4. 匯出 CSV</button>
+      </div>
+    </section>
+
+    <main class="workspace">
+      <!-- 影片顯示區 (含縮放控制) -->
+      <section class="viewport-card">
+        <div class="card-header">
+          <span>影片畫布 (含 ROI 追蹤與軌跡)</span>
+          <div class="zoom-controls">
+            <button id="btnZoomOut" class="btn-sm" title="縮小">-</button>
+            <span id="zoomDisplay">100%</span>
+            <button id="btnZoomIn" class="btn-sm" title="放大">+</button>
+            <button id="btnZoomReset" class="btn-sm" title="重設">重設</button>
+          </div>
+        </div>
+        <div class="viewport" id="viewportContainer">
+          <video id="videoElement" style="display:none;"></video>
+          <canvas id="canvasOutput"></canvas>
+        </div>
+      </section>
+
+      <!-- 橫向並排放置於底部的雙折線圖區 -->
+      <section class="charts-row">
+        <div class="chart-card">
+          <div class="card-header">X 位移 - 時間折線圖 (X vs Time)</div>
+          <div class="chart-container" id="chartContainerX">
+            <canvas id="chartCanvasX"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-card">
+          <div class="card-header">Y 位移 - 時間折線圖 (Y vs Time)</div>
+          <div class="chart-container" id="chartContainerY">
+            <canvas id="chartCanvasY"></canvas>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="data-summary">
+      <div class="info-item">定標比例: <strong id="scaleDisplay">未設定</strong></div>
+      <div class="info-item">已捕捉影幀: <strong id="pointCount">0</strong> 筆</div>
+      <div class="info-item">當前目標位置: <strong id="posDisplay">X: - m | Y: - m</strong></div>
+    </footer>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
