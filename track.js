@@ -1,25 +1,70 @@
-// 追蹤模組：負責目標選取、質心計算、逐幀自動追蹤
+// track.js
+// 追蹤模組
+// 高速版：MP4Box + WebCodecs + Dynamic Worker Queue
+//
+// 搭配：trackWorker.js
+//
+// 架構：
+// MP4Box → Samples → GOP Queue → Dynamic Worker Pool
+// → Worker 完成 GOP → 立即取得下一個 GOP → 最後依 timestamp 排序
+
+// ============================================================
+// 全域追蹤狀態
+// ============================================================
 
 let targetBBox = null;
 let targetColor = null;
+let roiBox = null;
 
-/**
- * 重置追蹤狀態
- */
+// ============================================================
+// 重置追蹤與 ROI
+// ============================================================
+
 export function resetTrackState() {
   targetBBox = null;
   targetColor = null;
+  roiBox = null;
 }
 
-/**
- * 選取目標中心，建立追蹤框與顏色特徵
- * @param {number} x - 點擊的 x 座標（像素）
- * @param {number} y - 點擊的 y 座標（像素）
- * @param {CanvasRenderingContext2D} ctx - 畫布 context
- * @returns {{ targetBBox: object, targetColor: object }}
- */
+// ============================================================
+// ROI
+// ============================================================
+
+export function setROI(x, y, width, height) {
+  roiBox = {
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.round(width),
+    height: Math.round(height)
+  };
+
+  return roiBox;
+}
+
+export function getROI() {
+  return roiBox;
+}
+
+// ============================================================
+// 記憶體預估
+// ============================================================
+
+export function estimateMemoryUsage(roiWidth, roiHeight, totalFrames) {
+  if (!roiWidth || !roiHeight || !totalFrames) return 0;
+
+  const bytesPerFrame = roiWidth * roiHeight * 4;
+  const totalBytes = bytesPerFrame * totalFrames;
+
+  return (totalBytes / (1024 * 1024)).toFixed(2);
+}
+
+// ============================================================
+// 選取目標
+// ============================================================
+
 export function selectTarget(x, y, ctx) {
   const boxSize = 36;
+
   targetBBox = {
     x: Math.round(x - boxSize / 2),
     y: Math.round(y - boxSize / 2),
@@ -27,43 +72,704 @@ export function selectTarget(x, y, ctx) {
     height: boxSize
   };
 
-  const pixel = ctx.getImageData(Math.round(x), Math.round(y), 1, 1).data;
-  targetColor = { r: pixel[0], g: pixel[1], b: pixel[2] };
+  const pixel = ctx.getImageData(
+    Math.round(x),
+    Math.round(y),
+    1,
+    1
+  ).data;
+
+  targetColor = {
+    r: pixel[0],
+    g: pixel[1],
+    b: pixel[2]
+  };
 
   return { targetBBox, targetColor };
 }
 
-/**
- * 基於顏色相似度加權的質心計算
- * @param {ImageData} imageData - ROI 區域的像素資料
- * @param {{ r: number, g: number, b: number }} colorTarget - 目標顏色
- * @returns {{ cx: number, cy: number } | null}
- */
+// ============================================================
+// 高速自動追蹤入口
+// ============================================================
+
+export async function runAutoTrackParallel({
+  videoFile,
+  canvas,
+  pxPerMeter,
+  workerCount = 4,
+  onFrameUpdate,
+  isTrackingCheck
+}) {
+  if (!pxPerMeter || !targetBBox || !targetColor || !roiBox || !videoFile) {
+    return [];
+  }
+
+  // ----------------------------------------------------------
+  // 確認 WebCodecs
+  // ----------------------------------------------------------
+
+  const webCodecsAvailable =
+    typeof VideoDecoder !== 'undefined' &&
+    typeof EncodedVideoChunk !== 'undefined';
+
+  // ----------------------------------------------------------
+  // 確認 MP4Box
+  // ----------------------------------------------------------
+
+  const mp4BoxAvailable = typeof MP4Box !== 'undefined';
+
+  // ----------------------------------------------------------
+  // 優先高速引擎
+  // ----------------------------------------------------------
+
+  if (webCodecsAvailable && mp4BoxAvailable) {
+    try {
+      return await demuxAndTrackWithWebCodecs({
+        videoFile,
+        canvas,
+        pxPerMeter,
+        workerCount,
+        onFrameUpdate,
+        isTrackingCheck
+      });
+    } catch (err) {
+      console.warn(
+        'WebCodecs / MP4Box 高速引擎失敗，切換 HTML5 Video fallback:',
+        err
+      );
+    }
+  }
+
+  // ----------------------------------------------------------
+  // HTML5 Video fallback
+  // ----------------------------------------------------------
+
+  return await runAutoTrackCanvasFallback({
+    canvas,
+    pxPerMeter,
+    onFrameUpdate,
+    isTrackingCheck
+  });
+}
+
+// ============================================================
+// WebCodecs + MP4Box + Dynamic Worker Pool
+// ============================================================
+
+async function demuxAndTrackWithWebCodecs({
+  videoFile,
+  canvas,
+  pxPerMeter,
+  workerCount,
+  onFrameUpdate,
+  isTrackingCheck
+}) {
+  // ----------------------------------------------------------
+  // Worker 數量限制
+  // ----------------------------------------------------------
+
+  const hardwareConcurrency = navigator.hardwareConcurrency || 4;
+
+  const actualWorkerCount = Math.max(
+    1,
+    Math.min(
+      Number(workerCount) || 4,
+      hardwareConcurrency,
+      6
+    )
+  );
+
+  console.log(`[Track] 使用 ${actualWorkerCount} 個 Worker`);
+
+  // ----------------------------------------------------------
+  // 取得完整影片 ArrayBuffer
+  // ----------------------------------------------------------
+
+  const buffer = await videoFile.arrayBuffer();
+  buffer.fileStart = 0;
+
+  // ----------------------------------------------------------
+  // 建立 MP4Box
+  // ----------------------------------------------------------
+
+  const mp4boxfile = MP4Box.createFile();
+
+  // ----------------------------------------------------------
+  // Worker 狀態
+  // ----------------------------------------------------------
+
+  const workers = [];
+  const workerStates = [];
+
+  for (let i = 0; i < actualWorkerCount; i++) {
+    workers.push(null);
+    workerStates.push({
+      index: i,
+      busy: false,
+      taskId: null
+    });
+  }
+
+  // ----------------------------------------------------------
+  // GOP Queue
+  // ----------------------------------------------------------
+
+  const gopQueue = [];
+  let gopBuildBuffer = [];
+  let gopCounter = 0;
+  let demuxReady = false;
+  let demuxFinished = false;
+  let processingStarted = false;
+  let finishedWorkers = 0;
+  let failed = false;
+
+  // ----------------------------------------------------------
+  // 所有結果
+  // ----------------------------------------------------------
+
+  const trackingData = [];
+
+  // ----------------------------------------------------------
+  // Promise
+  // ----------------------------------------------------------
+
+  return await new Promise((resolve, reject) => {
+    // ========================================================
+    // 清理
+    // ========================================================
+
+    function cleanup() {
+      workers.forEach(worker => {
+        if (worker) {
+          try {
+            worker.postMessage({ type: 'CLOSE' });
+          } catch (_) {}
+
+          try {
+            worker.terminate();
+          } catch (_) {}
+        }
+      });
+    }
+
+    // ========================================================
+    // 失敗
+    // ========================================================
+
+    function fail(err) {
+      if (failed) return;
+
+      failed = true;
+      cleanup();
+
+      reject(
+        err instanceof Error
+          ? err
+          : new Error(String(err))
+      );
+    }
+
+    // ========================================================
+    // 是否繼續追蹤
+    // ========================================================
+
+    function trackingActive() {
+      try {
+        return typeof isTrackingCheck !== 'function'
+          ? true
+          : isTrackingCheck();
+      } catch (_) {
+        return false;
+      }
+    }
+
+    // ========================================================
+    // 建立 Worker
+    // ========================================================
+
+    function createWorker(index) {
+      const worker = new Worker('trackWorker.js', {
+        type: 'module'
+      });
+
+      workers[index] = worker;
+
+      worker.onmessage = event => {
+        const { type, payload } = event.data || {};
+
+        // Worker READY
+        if (type === 'READY') {
+          workerStates[index].ready = true;
+          tryDispatch();
+          return;
+        }
+
+        // GOP 完成
+        if (type === 'GOP_COMPLETE') {
+          handleGOPComplete(index, payload);
+          return;
+        }
+
+        // Worker Error
+        if (type === 'ERROR') {
+          fail(
+            new Error(
+              payload?.message || `Worker ${index} 發生錯誤`
+            )
+          );
+        }
+      };
+
+      worker.onerror = event => {
+        fail(
+          new Error(
+            `Worker ${index} 發生錯誤: ${
+              event.message || 'Unknown error'
+            }`
+          )
+        );
+      };
+
+      return worker;
+    }
+
+    // ========================================================
+    // 初始化所有 Worker
+    // ========================================================
+
+    for (let i = 0; i < actualWorkerCount; i++) {
+      createWorker(i);
+    }
+
+    // ========================================================
+    // MP4Box onReady
+    // ========================================================
+
+    mp4boxfile.onReady = info => {
+      try {
+        const videoTrack = info.videoTracks?.[0];
+
+        if (!videoTrack) {
+          fail(new Error('影片檔案中未找到支援的視訊軌'));
+          return;
+        }
+
+        // Decoder Config
+        const decoderConfig = {
+          codec: videoTrack.codec,
+          codedWidth: videoTrack.video.width,
+          codedHeight: videoTrack.video.height
+        };
+
+        // ExtraData
+        const description = getDecoderDescription(
+          mp4boxfile,
+          videoTrack.id
+        );
+
+        if (description) {
+          decoderConfig.description = description;
+        }
+
+        // 發送 INIT
+        workers.forEach(worker => {
+          worker.postMessage({
+            type: 'INIT',
+            payload: {
+              decoderConfig,
+              roi: roiBox,
+              targetColor,
+              pxPerMeter,
+              canvasHeight: canvas.height
+            }
+          });
+        });
+
+        // 設定 extraction
+        mp4boxfile.setExtractionOptions(
+          videoTrack.id,
+          null,
+          { nbSamples: 500 }
+        );
+
+        demuxReady = true;
+
+        // 開始 extraction
+        mp4boxfile.start();
+      } catch (err) {
+        fail(err);
+      }
+    };
+
+    // ========================================================
+    // MP4Box Samples
+    // ========================================================
+
+    mp4boxfile.onSamples = (trackId, ref, samples) => {
+      if (failed || !samples?.length) return;
+
+      // 建立 GOP
+      for (const sample of samples) {
+        if (sample.is_sync && gopBuildBuffer.length > 0) {
+          gopQueue.push({
+            id: gopCounter++,
+            samples: gopBuildBuffer
+          });
+
+          gopBuildBuffer = [];
+        }
+
+        gopBuildBuffer.push(sample);
+      }
+
+      tryDispatch();
+    };
+
+    // ========================================================
+    // MP4Box Error
+    // ========================================================
+
+    mp4boxfile.onError = err => {
+      console.warn('MP4Box:', err);
+
+      if (gopQueue.length === 0 && gopBuildBuffer.length === 0) {
+        fail(new Error(`MP4Box 無法解析影片：${err}`));
+      }
+    };
+
+    // ========================================================
+    // 開始讀檔
+    // ========================================================
+
+    try {
+      mp4boxfile.appendBuffer(buffer);
+      mp4boxfile.flush();
+    } catch (err) {
+      fail(err);
+    }
+
+    // ========================================================
+    // Demux 結束檢查
+    // ========================================================
+
+    queueMicrotask(() => {
+      if (failed) return;
+
+      if (gopBuildBuffer.length > 0) {
+        gopQueue.push({
+          id: gopCounter++,
+          samples: gopBuildBuffer
+        });
+
+        gopBuildBuffer = [];
+      }
+
+      demuxFinished = true;
+
+      console.log(
+        `[Track] Demux 完成，共 ${gopQueue.length} GOP`
+      );
+
+      tryDispatch();
+      checkComplete();
+    });
+
+    // ========================================================
+    // 動態派工
+    // ========================================================
+
+    function tryDispatch() {
+      if (failed || !demuxReady) return;
+
+      // 使用者取消追蹤
+      if (!trackingActive()) {
+        cleanup();
+        resolve(trackingData);
+        return;
+      }
+
+      // 找閒置 Worker
+      for (let i = 0; i < workerStates.length; i++) {
+        const state = workerStates[i];
+
+        if (state.busy || !state.ready) continue;
+        if (gopQueue.length === 0) break;
+
+        // 取得下一個 GOP
+        const gop = gopQueue.shift();
+
+        // 建立 Transferable buffers
+        const samples = [];
+        const transferList = [];
+
+        for (const sample of gop.samples) {
+          const sampleBuffer = sample.data.buffer.slice(
+            sample.data.byteOffset,
+            sample.data.byteOffset + sample.data.byteLength
+          );
+
+          samples.push({
+            type: sample.is_sync ? 'key' : 'delta',
+            timestamp:
+              (sample.cts * 1_000_000) / sample.timescale,
+            duration:
+              (sample.duration * 1_000_000) / sample.timescale,
+            data: sampleBuffer
+          });
+
+          transferList.push(sampleBuffer);
+        }
+
+        const taskId = gop.id;
+
+        state.busy = true;
+        state.taskId = taskId;
+
+        // 傳給 Worker
+        try {
+          workers[i].postMessage(
+            {
+              type: 'DECODE_GOP',
+              payload: {
+                taskId,
+                samples
+              }
+            },
+            transferList
+          );
+        } catch (err) {
+          state.busy = false;
+          state.taskId = null;
+          fail(err);
+          return;
+        }
+      }
+
+      checkComplete();
+    }
+
+    // ========================================================
+    // GOP 完成
+    // ========================================================
+
+    function handleGOPComplete(workerIndex, payload) {
+      const state = workerStates[workerIndex];
+
+      state.busy = false;
+      state.taskId = null;
+
+      const results = payload?.results || [];
+
+      // 收集結果
+      for (const result of results) {
+        trackingData.push(result);
+      }
+
+      // UI 更新節流
+      if (onFrameUpdate && results.length > 0) {
+        const last = results[results.length - 1];
+
+        onFrameUpdate(last, trackingData);
+      }
+
+      // Worker 馬上拿下一個 GOP
+      tryDispatch();
+      checkComplete();
+    }
+
+    // ========================================================
+    // 完成判斷
+    // ========================================================
+
+    function checkComplete() {
+      if (failed || !demuxFinished) return;
+      if (gopQueue.length > 0) return;
+
+      // 還有 Worker 正在處理
+      for (const state of workerStates) {
+        if (state.busy) return;
+      }
+
+      // 全部完成
+      trackingData.sort(
+        (a, b) => Number(a.timestamp) - Number(b.timestamp)
+      );
+
+      // 清理 Worker
+      cleanup();
+
+      // 最後通知 UI
+      if (onFrameUpdate && trackingData.length > 0) {
+        onFrameUpdate(
+          trackingData[trackingData.length - 1],
+          trackingData
+        );
+      }
+
+      resolve(trackingData);
+    }
+  });
+}
+
+// ============================================================
+// Decoder Description
+// ============================================================
+
+function getDecoderDescription(mp4boxfile, trackId) {
+  try {
+    const track = mp4boxfile.getTrackById(trackId);
+
+    if (
+      !track?.mdia?.minf?.stbl?.stsd?.entries?.[0]
+    ) {
+      return null;
+    }
+
+    const entry = track.mdia.minf.stbl.stsd.entries[0];
+
+    const box =
+      entry.avcC ||
+      entry.hvcC ||
+      entry.vpcC ||
+      entry.av1C;
+
+    if (!box) return null;
+
+    const stream = new MP4Box.DataStream(
+      undefined,
+      0,
+      MP4Box.DataStream.BIG_ENDIAN
+    );
+
+    box.write(stream);
+
+    return new Uint8Array(stream.buffer, 8);
+  } catch (e) {
+    console.warn('提取 ExtraData 失敗:', e);
+    return null;
+  }
+}
+
+// ============================================================
+// HTML5 Video fallback
+// ============================================================
+
+async function runAutoTrackCanvasFallback({
+  canvas,
+  pxPerMeter,
+  onFrameUpdate,
+  isTrackingCheck
+}) {
+  const video = document.getElementById('videoElement');
+  const ctx = canvas.getContext('2d');
+  const trackingData = [];
+
+  video.currentTime = 0;
+
+  await new Promise(resolve => setTimeout(resolve, 200));
+
+  const fps = 30;
+  const frameDuration = 1 / fps;
+
+  while (
+    video.currentTime < video.duration &&
+    isTrackingCheck()
+  ) {
+    ctx.drawImage(
+      video,
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    );
+
+    const imgData = ctx.getImageData(
+      roiBox.x,
+      roiBox.y,
+      roiBox.width,
+      roiBox.height
+    );
+
+    const centroid = computeCentroid(
+      imgData,
+      targetColor
+    );
+
+    if (centroid) {
+      const cx = roiBox.x + centroid.cx;
+      const cy = roiBox.y + centroid.cy;
+
+      const x_m = cx / pxPerMeter;
+      const y_m = (canvas.height - cy) / pxPerMeter;
+
+      const frameRes = {
+        time: video.currentTime.toFixed(3),
+        x_px: cx.toFixed(1),
+        y_px: cy.toFixed(1),
+        x_m: x_m.toFixed(4),
+        y_m: y_m.toFixed(4),
+        cx,
+        cy,
+        timestamp: video.currentTime * 1_000_000
+      };
+
+      trackingData.push(frameRes);
+
+      if (onFrameUpdate) {
+        onFrameUpdate(frameRes, trackingData);
+      }
+    }
+
+    video.currentTime += frameDuration;
+
+    await new Promise(resolve => {
+      const onSeeked = () => {
+        video.removeEventListener('seeked', onSeeked);
+        resolve();
+      };
+
+      video.addEventListener('seeked', onSeeked);
+    });
+  }
+
+  return trackingData;
+}
+
+// ============================================================
+// Worker / 舊版共用質心計算
+// ============================================================
+
 export function computeCentroid(imageData, colorTarget) {
   const data = imageData.data;
   const w = imageData.width;
   const h = imageData.height;
+
   const tr = colorTarget.r;
   const tg = colorTarget.g;
   const tb = colorTarget.b;
 
-  let m00 = 0, m10 = 0, m01 = 0;
+  let m00 = 0;
+  let m10 = 0;
+  let m01 = 0;
 
   for (let y = 0; y < h; y++) {
     const rowOffset = y * w;
+
     for (let x = 0; x < w; x++) {
-      const idx = (rowOffset + x) << 2; // 等同 * 4，位元運算更快
+      const idx = (rowOffset + x) << 2;
+
       const r = data[idx];
       const g = data[idx + 1];
       const b = data[idx + 2];
 
-      // 使用整數運算計算顏色差異
-      const diff = (r > tr ? r - tr : tr - r)
-        + (g > tg ? g - tg : tg - g)
-        + (b > tb ? b - tb : tb - b);
+      const diff =
+        Math.abs(r - tr) +
+        Math.abs(g - tg) +
+        Math.abs(b - tb);
 
-      if (diff < 155) { // 相當於 weight > 100（255 - diff > 100）
+      if (diff < 155) {
         const weight = 255 - diff;
+
         m00 += weight;
         m10 += x * weight;
         m01 += y * weight;
@@ -72,62 +778,116 @@ export function computeCentroid(imageData, colorTarget) {
   }
 
   if (m00 === 0) return null;
-  return { cx: m10 / m00, cy: m01 / m00 };
+
+  return {
+    cx: m10 / m00,
+    cy: m01 / m00
+  };
 }
 
-/**
- * 逐幀 seek 的 Promise 封裝
- * @param {HTMLVideoElement} video - 影片元素
- * @param {number} time - 目標時間（秒）
- */
+// ============================================================
+// 舊版逐幀追蹤
+// 保留，避免其他程式引用時壞掉
+// ============================================================
+
 function seekTo(video, time) {
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     const onSeeked = () => {
       video.removeEventListener('seeked', onSeeked);
       resolve();
     };
+
     video.addEventListener('seeked', onSeeked);
     video.currentTime = time;
   });
 }
 
-/**
- * 執行自動追蹤
- * @param {object} params
- * @param {HTMLVideoElement} params.video - 影片元素
- * @param {HTMLCanvasElement} params.canvas - 畫布元素
- * @param {number} params.pxPerMeter - 像素/公尺比例
- * @param {function} params.onFrameUpdate - 每幀更新回呼
- * @param {function} params.isTrackingCheck - 檢查是否仍在追蹤中
- * @returns {Promise<Array>} - 追蹤資料陣列
- */
-export async function runAutoTrack({ video, canvas, pxPerMeter, onFrameUpdate, isTrackingCheck }) {
-  if (!pxPerMeter || !targetBBox || !targetColor) return [];
+export async function runAutoTrack({
+  video,
+  canvas,
+  pxPerMeter,
+  onFrameUpdate,
+  isTrackingCheck
+}) {
+  if (!pxPerMeter || !targetBBox || !targetColor) {
+    return [];
+  }
 
   const trackingData = [];
+
   const fps = 30;
   const frameDuration = 1 / fps;
+
   let frameIdx = 0;
-  let currentBBox = { ...targetBBox };
+
+  let currentBBox = {
+    ...targetBBox
+  };
 
   const roiWidth = targetBBox.width;
   const roiHeight = targetBBox.height;
-  const offCanvas = new OffscreenCanvas(roiWidth, roiHeight);
-  const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
 
-  const totalFrames = Math.floor(video.duration / frameDuration);
+  const offCanvas = new OffscreenCanvas(
+    roiWidth,
+    roiHeight
+  );
 
-  for (let t = 0; t < video.duration; t += frameDuration) {
+  const offCtx = offCanvas.getContext('2d', {
+    willReadFrequently: true
+  });
+
+  const totalFrames = Math.floor(
+    video.duration / frameDuration
+  );
+
+  for (
+    let t = 0;
+    t < video.duration;
+    t += frameDuration
+  ) {
     if (!isTrackingCheck()) break;
 
     await seekTo(video, t);
 
-    const cropX = Math.max(0, Math.min(canvas.width - roiWidth, currentBBox.x));
-    const cropY = Math.max(0, Math.min(canvas.height - roiHeight, currentBBox.y));
+    const cropX = Math.max(
+      0,
+      Math.min(
+        canvas.width - roiWidth,
+        currentBBox.x
+      )
+    );
 
-    offCtx.drawImage(video, cropX, cropY, roiWidth, roiHeight, 0, 0, roiWidth, roiHeight);
-    const roiData = offCtx.getImageData(0, 0, roiWidth, roiHeight);
-    const localCentroid = computeCentroid(roiData, targetColor);
+    const cropY = Math.max(
+      0,
+      Math.min(
+        canvas.height - roiHeight,
+        currentBBox.y
+      )
+    );
+
+    offCtx.drawImage(
+      video,
+      cropX,
+      cropY,
+      roiWidth,
+      roiHeight,
+      0,
+      0,
+      roiWidth,
+      roiHeight
+    );
+
+    const roiData = offCtx.getImageData(
+      0,
+      0,
+      roiWidth,
+      roiHeight
+    );
+
+    const localCentroid = computeCentroid(
+      roiData,
+      targetColor
+    );
 
     let cx = cropX + roiWidth / 2;
     let cy = cropY + roiHeight / 2;
@@ -136,11 +896,23 @@ export async function runAutoTrack({ video, canvas, pxPerMeter, onFrameUpdate, i
       cx = cropX + localCentroid.cx;
       cy = cropY + localCentroid.cy;
 
-      currentBBox.x = Math.max(0, Math.min(canvas.width - roiWidth, Math.round(cx - roiWidth / 2)));
-      currentBBox.y = Math.max(0, Math.min(canvas.height - roiHeight, Math.round(cy - roiHeight / 2)));
+      currentBBox.x = Math.max(
+        0,
+        Math.min(
+          canvas.width - roiWidth,
+          Math.round(cx - roiWidth / 2)
+        )
+      );
+
+      currentBBox.y = Math.max(
+        0,
+        Math.min(
+          canvas.height - roiHeight,
+          Math.round(cy - roiHeight / 2)
+        )
+      );
     }
 
-    // 轉換座標原點至左下角
     const x_m = cx / pxPerMeter;
     const y_m = (canvas.height - cy) / pxPerMeter;
 
@@ -150,26 +922,29 @@ export async function runAutoTrack({ video, canvas, pxPerMeter, onFrameUpdate, i
       x_px: cx.toFixed(1),
       y_px: cy.toFixed(1),
       x_m: x_m.toFixed(4),
-      y_m: y_m.toFixed(4)
+      y_m: y_m.toFixed(4),
+      cx,
+      cy,
+      timestamp: t * 1_000_000
     };
 
     trackingData.push(frameResult);
 
-    // 每 5 幀或最後一幀觸發 UI 與 Chart 繪製（修復：renderChart 移入條件內）
-    if (frameIdx % 5 === 0 || frameIdx === totalFrames - 1) {
+    if (
+      frameIdx % 5 === 0 ||
+      frameIdx === totalFrames - 1
+    ) {
       if (onFrameUpdate) {
-        onFrameUpdate({
-          frameIdx,
-          totalFrames,
-          currentBBox,
-          currentPos: { x: cx, y: cy },
+        onFrameUpdate(
+          frameResult,
           trackingData
-        });
+        );
       }
 
-      // 每 15 幀讓出 CPU 讓瀏覽器處理 UI 更新與 GC
       if (frameIdx % 15 === 0) {
-        await new Promise(r => setTimeout(r, 0));
+        await new Promise(resolve =>
+          setTimeout(resolve, 0)
+        );
       }
     }
 
@@ -178,6 +953,10 @@ export async function runAutoTrack({ video, canvas, pxPerMeter, onFrameUpdate, i
 
   return trackingData;
 }
+
+// ============================================================
+// Getters
+// ============================================================
 
 export function getTargetBBox() {
   return targetBBox;
