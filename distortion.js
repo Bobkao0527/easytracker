@@ -1,5 +1,5 @@
 // distortion.js
-// 透過 WebGL 實現高效能 GPU 影像扭曲 (桶狀 / 針墊畸變)
+// 透過 WebGL 實現高效能 GPU 影像扭曲 (桶狀 / 針墊畸變與透視姿態變換)
 
 let gl = null;
 let program = null;
@@ -14,7 +14,7 @@ const vsSource = `
   varying vec2 v_texCoord;
   void main() {
     gl_Position = vec4(a_position, 0.0, 1.0);
-    v_texCoord = vec2(a_texCoord.x, 1.0 - a_texCoord.y); // Canvas 與 WebGL Y軸轉換
+    v_texCoord = vec2(a_texCoord.x, 1.0 - a_texCoord.y); // Canvas 與 WebGL Y 軸轉換
   }
 `;
 
@@ -32,21 +32,17 @@ const fsSource = `
   void main() {
     // 1. 套用透視變換 (Screen Pixel -> 原圖去畸變座標)
     vec3 proj = u_homography * vec3(v_texCoord, 1.0);
-    if (proj.z == 0.0) {
+    if (proj.z <= 0.0) {
       gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
       return;
     }
     vec2 uv_rect = proj.xy / proj.z;
 
     // 2. 逆向施加徑向畸變以取樣真實原圖紋理
-    // 使用中心對角化歸一化空間，徹底解決 9:16 直向縱橫比失真
     vec2 st = uv_rect - vec2(0.5);
-    
-    // 修正：針對直向 (u_aspect < 1.0) 與橫向 (u_aspect >= 1.0) 正確等比縮放
     vec2 metricSt = vec2(st.x * u_aspect, st.y);
     float r2 = dot(metricSt, metricSt);
 
-    // 逆向去畸變近似：原圖取樣點應除以 (1.0 + k1 * r2)
     vec2 distortedSt = st / (1.0 + u_k1 * r2);
     vec2 uv = distortedSt + vec2(0.5);
 
@@ -144,8 +140,9 @@ export function renderDistortedVideo(videoElement, targetCtx, k1 = 0) {
     gl.useProgram(program);
     gl.uniform1f(k1UniformLocation, k1);
     gl.uniform1f(aspectUniformLocation, videoElement.videoWidth / videoElement.videoHeight);
-    // currentHomography is stored row-major; WebGL expects column-major data.
+    
     const h = currentHomography;
+    // WebGL uniformMatrix3fv 為 Column-Major，以轉置傳入 Row-Major 陣列
     gl.uniformMatrix3fv(
       homographyUniformLocation,
       false,

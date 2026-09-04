@@ -1,15 +1,13 @@
-// 圖表模組：負責 X/Y 位移-時間折線圖的繪製
+// chart.js：負責 X/Y 位移-時間折線圖的繪製 (工程示波器風格)
 
 let canvasX = null, ctxX = null;
 let canvasY = null, ctxY = null;
 
-// 每個資料點在圖表上的最小水平像素距離，避免長影片擠在一起
-const PX_PER_POINT = 12;
+// 每個資料點在圖表上的最小水平像素距離（支援長時序橫向捲動）
+const PX_PER_POINT = 14;
 
 /**
  * 初始化圖表 Canvas 元素
- * @param {HTMLCanvasElement} elX - X 位移圖表 canvas
- * @param {HTMLCanvasElement} elY - Y 位移圖表 canvas
  */
 export function initChart(elX, elY) {
   canvasX = elX;
@@ -28,51 +26,93 @@ export function resizeChart() {
 }
 
 /**
- * 清除並重繪圖表軸線
+ * 清除並重繪初始空軸線
  */
 export function clearChart() {
   const charts = [
-    { canvas: canvasX, ctx: ctxX, title: 'X 位移 (m)', color: '#06b6d4' },
-    { canvas: canvasY, ctx: ctxY, title: 'Y 位移 (m)', color: '#22c55e' }
+    { canvas: canvasX, ctx: ctxX, title: 'CH-1: X-DISPLACEMENT (m)', color: '#38bdf8' },
+    { canvas: canvasY, ctx: ctxY, title: 'CH-2: Y-DISPLACEMENT (m)', color: '#f87171' }
   ];
 
   charts.forEach(item => {
     if (!item.ctx) return;
     const parent = item.canvas.parentElement;
-    item.canvas.width = parent.clientWidth || 400;
-    item.canvas.height = parent.clientHeight || 250;
-    item.ctx.fillStyle = '#090d16';
-    item.ctx.fillRect(0, 0, item.canvas.width, item.canvas.height);
-    drawAxes(item.ctx, item.canvas.width, item.canvas.height, item.title, item.color);
+    const w = parent.clientWidth || 300;
+    const h = parent.clientHeight || 180;
+    
+    item.canvas.width = w;
+    item.canvas.height = h;
+
+    drawFrameBackground(item.ctx, w, h, item.title, item.color);
   });
 }
 
 /**
- * 繪製圖表軸線與標題
+ * 繪製示波器背景底網格與刻度框
  */
-function drawAxes(ctx, w, h, title, color) {
-  const padding = 40;
-  ctx.strokeStyle = '#334155';
+function drawFrameBackground(ctx, w, h, title, color, minV = null, maxV = null, maxT = null) {
+  const padLeft = 45, padRight = 25, padTop = 22, padBottom = 22;
+  const plotW = Math.max(10, w - padLeft - padRight);
+  const plotH = Math.max(10, h - padTop - padBottom);
+
+  // 1. 底色
+  ctx.fillStyle = '#090d12';
+  ctx.fillRect(0, 0, w, h);
+
+  // 2. 示波器輕量背景網格 (Grid)
+  ctx.strokeStyle = '#18202c';
   ctx.lineWidth = 1;
-  ctx.strokeRect(padding, padding / 2, w - padding * 1.5, h - padding * 1.5);
+  ctx.beginPath();
+  const vSteps = 4; // 垂直 4 格
+  for (let i = 0; i <= vSteps; i++) {
+    const y = padTop + (plotH / vSteps) * i;
+    ctx.moveTo(padLeft, y);
+    ctx.lineTo(padLeft + plotW, y);
+  }
+  const hSteps = Math.max(2, Math.floor(plotW / 80)); // 每 80px 一格時間線
+  for (let i = 0; i <= hSteps; i++) {
+    const x = padLeft + (plotW / hSteps) * i;
+    ctx.moveTo(x, padTop);
+    ctx.lineTo(x, padTop + plotH);
+  }
+  ctx.stroke();
 
+  // 3. 繪圖區外框
+  ctx.strokeStyle = '#272f38';
+  ctx.strokeRect(padLeft, padTop, plotW, plotH);
+
+  // 4. 左上角通道標題
   ctx.fillStyle = color;
-  ctx.font = '12px sans-serif';
-  ctx.fillText(title, padding + 10, 20);
+  ctx.font = '10px "JetBrains Mono", Consolas, monospace';
+  ctx.fillText(title, padLeft + 6, padTop + 14);
 
-  ctx.fillStyle = '#64748b';
-  ctx.font = '11px sans-serif';
-  ctx.fillText('Time (s)', w - 60, h - 10);
+  // 5. 繪製刻度數值 (數值範圍有效時)
+  ctx.fillStyle = '#6e7681';
+  ctx.font = '9px "JetBrains Mono", Consolas, monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+
+  if (minV !== null && maxV !== null) {
+    ctx.fillText(maxV.toFixed(2), padLeft - 6, padTop);
+    ctx.fillText(((minV + maxV) / 2).toFixed(2), padLeft - 6, padTop + plotH / 2);
+    ctx.fillText(minV.toFixed(2), padLeft - 6, padTop + plotH);
+  }
+
+  // 時間軸標記
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText('0.0s', padLeft, padTop + plotH + 5);
+  if (maxT !== null) {
+    ctx.textAlign = 'right';
+    ctx.fillText(`${maxT.toFixed(2)}s`, padLeft + plotW, padTop + plotH + 5);
+  }
 }
 
 /**
- * 手動迴圈求最值，避免 Math.max(...bigArray) 的 stack overflow
- * @param {number[]} arr
- * @returns {{ min: number, max: number }}
+ * 手動求極值避免呼叫棧溢位
  */
 function getMinMax(arr) {
-  let min = arr[0];
-  let max = arr[0];
+  let min = arr[0], max = arr[0];
   for (let i = 1; i < arr.length; i++) {
     const v = arr[i];
     if (v < min) min = v;
@@ -82,54 +122,55 @@ function getMinMax(arr) {
 }
 
 /**
- * 渲染圖表資料
- * @param {Array} trackingData - 追蹤資料陣列
+ * 渲染追蹤資料
  */
 export function renderChart(trackingData) {
-  if (!ctxX || !ctxY || trackingData.length === 0) return;
+  if (!ctxX || !ctxY || !trackingData || trackingData.length === 0) return;
 
   const times = trackingData.map(d => parseFloat(d.time));
   const xVals = trackingData.map(d => parseFloat(d.x_m));
   const yVals = trackingData.map(d => parseFloat(d.y_m));
 
-  const padding = 40;
+  const padLeft = 45, padRight = 25, padTop = 22, padBottom = 22;
 
   const renderSingleGraph = (canvas, ctx, values, title, color) => {
     const parent = canvas.parentElement;
-    const minW = parent.clientWidth || 400;
-    const targetW = Math.max(minW, padding * 2 + trackingData.length * PX_PER_POINT);
-    const targetH = parent.clientHeight || 250;
+    const minW = parent.clientWidth || 300;
+    
+    // 依據資料量動態拓展寬度 (保留示波器時間滾動能力)
+    const targetW = Math.max(minW, padLeft + padRight + trackingData.length * PX_PER_POINT);
+    const targetH = parent.clientHeight || 180;
 
     if (canvas.width !== targetW || canvas.height !== targetH) {
       canvas.width = targetW;
       canvas.height = targetH;
     }
 
-    const w = canvas.width - padding * 1.5;
-    const h = canvas.height - padding * 1.5;
-
-    ctx.fillStyle = '#090d16';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    drawAxes(ctx, canvas.width, canvas.height, title, color);
+    const plotW = canvas.width - padLeft - padRight;
+    const plotH = canvas.height - padTop - padBottom;
 
     const minT = 0;
     const { max: maxT_raw } = getMinMax(times);
-    const maxT = maxT_raw || 1;
+    const maxT = Math.max(maxT_raw || 0, 0.5);
 
     let { min: minV, max: maxV } = getMinMax(values);
     if (minV === maxV) { minV -= 0.5; maxV += 0.5; }
-    const margin = (maxV - minV) * 0.1 || 0.1;
+    const margin = (maxV - minV) * 0.12 || 0.05;
     minV -= margin;
     maxV += margin;
 
-    const rangeT = maxT - minT || 1;
-    const rangeV = maxV - minV;
-    const mapX = (t) => padding + ((t - minT) / rangeT) * w;
-    const mapY = (val) => (padding / 2) + h - ((val - minV) / rangeV) * h;
+    // 繪製背景與網格刻度
+    drawFrameBackground(ctx, canvas.width, canvas.height, title, color, minV, maxV, maxT);
 
-    // 繪製折線
+    // 精確座標映射 (完全鎖在 plotW 與 plotH 邊界內)
+    const rangeT = maxT - minT || 1;
+    const rangeV = maxV - minV || 1;
+    const mapX = (t) => padLeft + ((t - minT) / rangeT) * plotW;
+    const mapY = (val) => padTop + plotH - ((val - minV) / rangeV) * plotH;
+
+    // 1. 折線繪製
     ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 1.5;
     ctx.beginPath();
     for (let i = 0; i < times.length; i++) {
       const px = mapX(times[i]);
@@ -139,30 +180,34 @@ export function renderChart(trackingData) {
     }
     ctx.stroke();
 
-    // 繪製資料點（資料量大時跳過部分點以保持效能）
+    // 2. 數據點繪製 (超過 300 點降採樣，維護流暢度)
     ctx.fillStyle = color;
-    const step = times.length > 500 ? Math.ceil(times.length / 500) : 1;
+    const step = times.length > 300 ? Math.ceil(times.length / 300) : 1;
     for (let i = 0; i < times.length; i += step) {
       const px = mapX(times[i]);
       const py = mapY(values[i]);
       ctx.beginPath();
-      ctx.arc(px, py, 3, 0, Math.PI * 2);
+      ctx.arc(px, py, 2, 0, Math.PI * 2);
       ctx.fill();
     }
-    // 確保最後一個點永遠被繪製
-    if (step > 1 && times.length > 0) {
+    // 必繪製最後一個最新錨點（空心外光暈）
+    if (times.length > 0) {
       const lastIdx = times.length - 1;
       const px = mapX(times[lastIdx]);
       const py = mapY(values[lastIdx]);
       ctx.beginPath();
-      ctx.arc(px, py, 3, 0, Math.PI * 2);
+      ctx.arc(px, py, 4, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffffff';
       ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
     }
 
-    // 當資料超長時，自動向右滾動追蹤最新資料
+    // 自動滾動至最右側最新時間點
     parent.scrollLeft = parent.scrollWidth;
   };
 
-  renderSingleGraph(canvasX, ctxX, xVals, 'X 位移 (m)', '#06b6d4');
-  renderSingleGraph(canvasY, ctxY, yVals, 'Y 位移 (m)', '#22c55e');
+  renderSingleGraph(canvasX, ctxX, xVals, 'CH-1: X-DISPLACEMENT (m)', '#38bdf8');
+  renderSingleGraph(canvasY, ctxY, yVals, 'CH-2: Y-DISPLACEMENT (m)', '#f87171');
 }
