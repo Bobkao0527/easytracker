@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>KineticTrack Pro | 運動力學視訊追蹤與幾何量測工作站</title>
+  <title>KineticTrack Pro | 多點運動力學視訊追蹤與幾何量測工作站</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div class="desktop-shell">
     
-    <!-- 1. 頂部軟體標題列與系統狀態 -->
+    <!-- 1. 頂部標題列 -->
     <header class="sys-titlebar">
       <div class="brand">
         <svg class="brand-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
@@ -17,7 +17,7 @@
           <path d="M12 3v18M3 12h18"></path>
           <circle cx="12" cy="12" r="3" fill="currentColor"></circle>
         </svg>
-        <span class="brand-name">KineticTrack Studio <span class="brand-ver">v2.4 Pro</span></span>
+        <span class="brand-name">KineticTrack Studio <span class="brand-ver">v2.5 MultiTrack Pro</span></span>
       </div>
       <div class="sys-status-wrapper">
         <span class="status-indicator"></span>
@@ -25,7 +25,7 @@
       </div>
     </header>
 
-    <!-- 2. 工程指令功能帶 (Action Ribbon) -->
+    <!-- 2. 工程功能帶 -->
     <section class="action-ribbon" aria-label="工程管線操作">
       <div class="ribbon-group">
         <span class="ribbon-group-label">訊號來源 (SOURCE)</span>
@@ -41,13 +41,13 @@
       <div class="ribbon-divider"></div>
 
       <div class="ribbon-group">
-        <span class="ribbon-group-label">追蹤管線 (PIPELINE)</span>
+        <span class="ribbon-group-label">多目標追蹤管線 (PIPELINE)</span>
         <div class="ribbon-controls">
           <button id="btnTrack" class="btn btn-tool" disabled>
-            <span class="step-tag">Step 2</span> 指定目標中心
+            <span class="step-tag">Step 2</span> + 新增追蹤目標點
           </button>
           <button id="btnProcess" class="btn btn-tool btn-accent" disabled>
-            <span class="step-tag">Step 3</span> 啟動自適應追蹤
+            <span class="step-tag">Step 3</span> 啟動多點自適應追蹤
           </button>
         </div>
       </div>
@@ -59,22 +59,21 @@
         <div class="ribbon-controls">
           <button id="btnExport" class="btn btn-tool btn-emerald" disabled>
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            匯出 CSV 遙測矩陣
+            匯出多質點 CSV 矩陣
           </button>
         </div>
       </div>
     </section>
 
-    <!-- 3. 主要工作站劃分區 (Viewport + Inspector) -->
+    <!-- 3. 工作站劃分區 -->
     <main class="workbench-workspace">
       
-      <!-- 主視圖監視器 (Viewport Monitor) -->
+      <!-- 主視圖監視器 -->
       <section class="panel viewport-panel">
         <div class="panel-header">
           <div class="panel-title">
             <span class="title-led"></span>視訊畫布監控器 (PRIMARY_OPTICAL_VIEW)
           </div>
-          <!-- 縮放與畫布平移工具列 -->
           <div class="zoom-controls">
             <button id="btnZoomOut" class="btn-icon" title="縮小 (Zoom Out)">−</button>
             <span id="zoomDisplay" class="mono-display">100%</span>
@@ -84,12 +83,12 @@
         </div>
 
         <div class="viewport-canvas-wrapper" id="viewportContainer">
-          <!-- 暫停手動校正警報列 (HUD Overlay) -->
+          <!-- 暫停手動校正警報列 -->
           <div id="lostTargetBar" class="tracking-alert-bar" style="display: none;">
             <div class="alert-icon">⚠</div>
             <div class="alert-info">
-              <strong>NCC 吻合度低於門檻</strong>
-              <small>目標特徵遺失，請在畫面上拖曳 ROI 綠框校準定位</small>
+              <strong id="lostTargetMsg">NCC 吻合度低於門檻</strong>
+              <small>請在畫面上拖曳該點方框或點選物體新位置校正定位</small>
             </div>
             <div class="alert-actions">
               <button id="btnResumeTrack" class="btn btn-xs btn-emerald">確認修正 (Resume)</button>
@@ -102,7 +101,7 @@
           <canvas id="canvasOutput"></canvas>
         </div>
 
-        <!-- 專業影訊時軸控制列 (NLE Timeline Strip) -->
+        <!-- 影訊時軸控制列 -->
         <div class="playback-timeline-bar">
           <div class="timeline-transport">
             <button id="btnPrevFrame" class="btn-icon" title="逐格後退 (Step -1 Frame)">⏮</button>
@@ -120,19 +119,31 @@
         </div>
       </section>
 
-      <!-- 右側幾何校正與追蹤參數檢視器 (Inspector Panel) -->
+      <!-- 參數與目標檢視器 -->
       <aside class="panel inspector-panel" aria-label="校正與追蹤設定">
         <div class="panel-header">
           <div class="panel-title">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            參數控制台 (CONFIG)
+            控制台 (CONFIG)
           </div>
         </div>
 
         <div class="inspector-scroll-content">
-          <!-- 區塊 1: 相關度匹配閥值 -->
+          
+          <!-- ★ 新增：多目標管理面板 -->
           <div class="config-group">
-            <div class="group-header">相關度匹配設定 (NCC_THRESHOLD)</div>
+            <div class="group-header-flex">
+              <span>追蹤目標點清單 (TARGETS)</span>
+              <button id="btnClearTargets" class="btn-text-danger" title="清空全部追蹤點">清空</button>
+            </div>
+            <div id="targetListContainer" class="target-chip-list">
+              <span class="empty-tip">尚未指定追蹤點，請點擊「Step 2」加入目標</span>
+            </div>
+          </div>
+
+          <!-- 相關度門檻 -->
+          <div class="config-group">
+            <div class="group-header">相關度匹配門檻 (NCC_THRESHOLD)</div>
             <div class="control-row">
               <span class="control-label">吻合門檻:</span>
               <div class="slider-field">
@@ -142,7 +153,7 @@
             </div>
           </div>
 
-          <!-- 區塊 2: 幾何尺度定標 -->
+          <!-- 空間尺度定標 -->
           <div class="config-group">
             <div class="group-header">空間尺度校正 (SPATIAL_CALIB)</div>
             <button id="btnCalibrate" class="btn btn-block" disabled>
@@ -158,7 +169,7 @@
             </div>
           </div>
 
-          <!-- 區塊 3: 座標軸傾角 -->
+          <!-- 座標軸傾角 -->
           <div class="config-group">
             <div class="group-header">座標旋轉角 (AXIS_ROTATION)</div>
             <div class="control-row">
@@ -170,7 +181,7 @@
             </div>
           </div>
 
-          <!-- 區塊 4: 光學鏡頭畸變與透視 -->
+          <!-- 鏡頭畸變與透視 -->
           <div class="config-group">
             <div class="group-header">鏡頭畸變與透視幾何 (OPTICAL_CORR)</div>
             <div class="control-row">
@@ -182,25 +193,34 @@
             </div>
             
             <div class="multi-btn-row">
-              <button id="btnAutoK1" class="btn btn-secondary btn-xs" title="在畫面上一條長直線上點 6 個點求解 k1">
-                k1 畸變求解 (6點)
-              </button>
-              <button id="btnAutoPerspective" class="btn btn-accent-dark btn-xs" title="依已知矩形 4 個角點進行俯視轉正與定標">
-                矩形透視校正 (4點)
-              </button>
+              <button id="btnAutoK1" class="btn btn-secondary btn-xs">k1 畸變求解 (6點)</button>
+              <button id="btnAutoPerspective" class="btn btn-accent-dark btn-xs">矩形透視校正 (4點)</button>
             </div>
           </div>
+
         </div>
       </aside>
 
-      <!-- 4. 下方時序分析折線圖區 (Time-Series Analytics Dock) -->
+      <!-- 4. 時序分析折線圖區 -->
       <section class="panel charts-panel">
+        <div class="chart-view-toolbar">
+          <div class="chart-toolbar-title">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            <span>示波器通道選擇器:</span>
+          </div>
+          <div class="chart-filter-pills" id="chartFilterPills">
+            <button class="pill-btn active" data-target-id="all">
+              <span class="pill-badge-all">ALL</span> 全部疊加對比
+            </button>
+            <!-- 這裡會動態插入各個質點按鈕 [● P1] [● P2] -->
+          </div>
+        </div>
+
         <div class="charts-subgrid">
-          
           <div class="chart-box">
             <div class="chart-tab-header">
               <span class="chart-tab-title">X-AXIS DISPLACEMENT (m) vs TIME (s)</span>
-              <span class="channel-indicator ch-x">CH-1: X</span>
+              <span class="channel-indicator ch-x" id="chartLabelX">CH-1: X</span>
             </div>
             <div class="chart-body" id="chartContainerX">
               <canvas id="chartCanvasX"></canvas>
@@ -210,19 +230,18 @@
           <div class="chart-box">
             <div class="chart-tab-header">
               <span class="chart-tab-title">Y-AXIS DISPLACEMENT (m) vs TIME (s)</span>
-              <span class="channel-indicator ch-y">CH-2: Y</span>
+              <span class="channel-indicator ch-y" id="chartLabelY">CH-2: Y</span>
             </div>
             <div class="chart-body" id="chartContainerY">
               <canvas id="chartCanvasY"></canvas>
             </div>
           </div>
-
         </div>
       </section>
 
     </main>
 
-    <!-- 5. 底部高密度即時遙測狀態列 (Engineering Telemetry Bar) -->
+    <!-- 5. 即時遙測狀態列 -->
     <footer class="telemetry-bar">
       <div class="telemetry-node">
         <span class="node-key">SCALE:</span>
@@ -240,7 +259,7 @@
       </div>
       <div class="telemetry-separator"></div>
       <div class="telemetry-node highlight">
-        <span class="node-key">COORDINATES:</span>
+        <span class="node-key">TARGET_COORD:</span>
         <strong id="posDisplay" class="node-val mono">X: -- m | Y: -- m</strong>
       </div>
       <div class="telemetry-align-right">

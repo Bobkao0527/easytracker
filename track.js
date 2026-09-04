@@ -1,70 +1,96 @@
 // track.js
-let templatePatch = null;
-let targetBBox = null;
-let targetCenter = null;  // { cx, cy }
-let templateSize = 32;
-let currentSearchRadius = 60;
+let targets = []; // 存儲所有追蹤目標物件
+let activeTargetId = null;
+let defaultTemplateSize = 32;
+let defaultSearchRadius = 60;
+
+export const TARGET_COLORS = [
+  '#22c55e', // P1: 綠色 (Emerald)
+  '#06b6d4', // P2: 青色 (Cyan)
+  '#f43f5e', // P3: 桃紅 (Rose)
+  '#eab308', // P4: 琥珀金 (Amber)
+  '#a855f7', // P5: 紫色 (Purple)
+  '#3b82f6', // P6: 藍色 (Blue)
+  '#f97316'  // P7: 橙色 (Orange)
+];
 
 export function resetTrackState() {
-  templatePatch = null;
-  targetBBox = null;
-  targetCenter = null;
+  targets = [];
+  activeTargetId = null;
 }
 
-export function setROI(x, y, width, height) {
-  return {
-    x: Math.round(x),
-    y: Math.round(y),
-    width: Math.round(width),
-    height: Math.round(height)
-  };
+export function getAllTargets() {
+  return targets;
 }
 
-export function setSearchRadius(radius) {
-  currentSearchRadius = Math.max(10, Math.round(radius));
+export function getActiveTarget() {
+  return targets.find(t => t.id === activeTargetId) || targets[0] || null;
+}
+
+export function setActiveTargetId(id) {
+  activeTargetId = id;
+}
+
+export function removeTarget(id) {
+  targets = targets.filter(t => t.id !== id);
+  if (activeTargetId === id) {
+    activeTargetId = targets.length > 0 ? targets[0].id : null;
+  }
 }
 
 export function getSearchRadius() {
-  return currentSearchRadius;
+  const active = getActiveTarget();
+  return active ? active.searchRadius : defaultSearchRadius;
 }
 
-export function getTargetCenter() {
-  return targetCenter;
+export function setSearchRadius(radius) {
+  const active = getActiveTarget();
+  const r = Math.max(10, Math.round(radius));
+  if (active) active.searchRadius = r;
+  defaultSearchRadius = r;
 }
 
 export function getTemplateSize() {
-  return templateSize;
+  const active = getActiveTarget();
+  return active ? active.templateSize : defaultTemplateSize;
 }
 
-// 僅平移座標與 BBox（供滑鼠拖曳時高頻更新，不消耗效能讀取 ImageData）
-export function setTargetCenter(cx, cy) {
-  targetCenter = { cx, cy };
-  const half = Math.floor(templateSize / 2);
-  targetBBox = {
+export function getTargetCenter() {
+  const active = getActiveTarget();
+  return active ? active.center : null;
+}
+
+export function setTargetCenter(cx, cy, targetId = activeTargetId) {
+  const target = targets.find(t => t.id === targetId) || getActiveTarget();
+  if (!target) return;
+  target.center = { cx, cy };
+  const half = Math.floor(target.templateSize / 2);
+  target.bbox = {
     x: Math.round(cx - half),
     y: Math.round(cy - half),
-    width: templateSize,
-    height: templateSize
+    width: target.templateSize,
+    height: target.templateSize
   };
 }
 
-// 僅在釋放滑鼠或確認校正時，擷取指定大小的純淨紋理模板
-export function updateTemplatePatch(ctx, cx, cy, newSize = templateSize) {
-  templateSize = Math.max(10, Math.round(newSize));
-  const half = Math.floor(templateSize / 2);
+// 根據指定座標與尺寸更新特定目標的灰階 NCC 特徵矩陣
+export function updateTemplatePatch(ctx, cx, cy, newSize = null, targetId = activeTargetId) {
+  const target = targets.find(t => t.id === targetId);
+  if (!target) return null;
+
+  if (newSize) {
+    target.templateSize = Math.max(10, Math.round(newSize));
+  }
+  const size = target.templateSize;
+  const half = Math.floor(size / 2);
   const startX = Math.round(cx - half);
   const startY = Math.round(cy - half);
 
-  targetCenter = { cx, cy };
-  targetBBox = {
-    x: startX,
-    y: startY,
-    width: templateSize,
-    height: templateSize
-  };
+  target.center = { cx, cy };
+  target.bbox = { x: startX, y: startY, width: size, height: size };
 
-  const imgData = ctx.getImageData(startX, startY, templateSize, templateSize);
-  const gray = new Float32Array(templateSize * templateSize);
+  const imgData = ctx.getImageData(startX, startY, size, size);
+  const gray = new Float32Array(size * size);
   let sum = 0;
 
   for (let i = 0; i < gray.length; i++) {
@@ -82,21 +108,42 @@ export function updateTemplatePatch(ctx, cx, cy, newSize = templateSize) {
   }
   const norm = Math.sqrt(variance) || 1e-5;
 
-  templatePatch = {
+  target.templatePatch = {
     data: gray,
     norm: norm,
-    width: templateSize,
-    height: templateSize
+    width: size,
+    height: size
   };
 
-  return { targetBBox, targetColor: true };
+  return target;
 }
 
-export function selectTarget(x, y, ctx, size = 32) {
-  return updateTemplatePatch(ctx, x, y, size);
+// 新增一個追蹤點
+export function addTargetPoint(x, y, ctx, size = 32) {
+  const newIndex = targets.length;
+  const id = `target_${Date.now()}_${newIndex}`;
+  const color = TARGET_COLORS[newIndex % TARGET_COLORS.length];
+  const name = `P${newIndex + 1}`;
+
+  const newTarget = {
+    id,
+    name,
+    color,
+    templateSize: size,
+    searchRadius: defaultSearchRadius,
+    center: { cx: x, cy: y },
+    bbox: null,
+    templatePatch: null,
+    trajectory: []
+  };
+
+  targets.push(newTarget);
+  activeTargetId = id;
+  updateTemplatePatch(ctx, x, y, size, id);
+  return newTarget;
 }
 
-// NCC 模板匹配
+// NCC 模板匹配演算法
 function matchTemplateNCC(searchData, searchW, searchH, tpl) {
   const tW = tpl.width;
   const tH = tpl.height;
@@ -156,14 +203,22 @@ function matchTemplateNCC(searchData, searchW, searchH, tpl) {
 
 export function seekTo(video, time) {
   return new Promise(resolve => {
-    if (Math.abs(video.currentTime - time) < 0.0001) {
+    if (Math.abs(video.currentTime - time) < 0.001) {
       resolve();
       return;
     }
+    let timer;
     const onSeeked = () => {
+      clearTimeout(timer);
       video.removeEventListener('seeked', onSeeked);
       resolve();
     };
+    // ★ 保險機制：若 150ms 內瀏覽器解碼未回調 seeked，強制 resolve 繼續下一幀
+    timer = setTimeout(() => {
+      video.removeEventListener('seeked', onSeeked);
+      resolve();
+    }, 150);
+
     video.addEventListener('seeked', onSeeked);
     video.currentTime = time;
   });
@@ -181,278 +236,286 @@ function drawHandle(ctx, x, y, color) {
   ctx.restore();
 }
 
-// 檢測滑鼠落點
+// 支援多目標的點擊與手柄判定
 export function hitTestHandles(mx, my, canvasWidth = 1e5, canvasHeight = 1e5) {
-  if (!targetCenter || !targetBBox) return null;
+  if (targets.length === 0) return null;
 
-  const { cx, cy } = targetCenter;
-  const halfT = templateSize / 2;
-  const r = currentSearchRadius;
-  const HIT_DIST = 12; // 角點手柄判定半徑
+  const HIT_DIST = 12;
+  const active = getActiveTarget();
 
-  // 1. 綠框四角縮放手柄（最優先判定）
-  const targetCorners = [
-    { type: 'target', cursor: 'nwse-resize', x: cx - halfT, y: cy - halfT },
-    { type: 'target', cursor: 'nesw-resize', x: cx + halfT, y: cy - halfT },
-    { type: 'target', cursor: 'nwse-resize', x: cx + halfT, y: cy + halfT },
-    { type: 'target', cursor: 'nesw-resize', x: cx - halfT, y: cy + halfT }
-  ];
-  for (const corner of targetCorners) {
-    if (Math.hypot(mx - corner.x, my - corner.y) <= HIT_DIST) return corner;
+  // 1. 優先檢測「當前啟用目標 (Active Target)」的手柄
+  if (active && active.center) {
+    const { cx, cy } = active.center;
+    const halfT = active.templateSize / 2;
+    const r = active.searchRadius;
+
+    // 1-1. 目標框四角
+    const targetCorners = [
+      { type: 'target', cursor: 'nwse-resize', x: cx - halfT, y: cy - halfT },
+      { type: 'target', cursor: 'nesw-resize', x: cx + halfT, y: cy - halfT },
+      { type: 'target', cursor: 'nwse-resize', x: cx + halfT, y: cy + halfT },
+      { type: 'target', cursor: 'nesw-resize', x: cx - halfT, y: cy + halfT }
+    ];
+    for (const corner of targetCorners) {
+      if (Math.hypot(mx - corner.x, my - corner.y) <= HIT_DIST) {
+        return { ...corner, targetId: active.id };
+      }
+    }
+
+    // 1-2. 搜尋框四角手柄
+    const sX = Math.max(0, Math.min(canvasWidth - r * 2, cx - r));
+    const sY = Math.max(0, Math.min(canvasHeight - r * 2, cy - r));
+    const sW = Math.min(r * 2, canvasWidth - sX);
+    const sH = Math.min(r * 2, canvasHeight - sY);
+
+    const searchCorners = [
+      { type: 'search', cursor: 'nwse-resize', x: sX, y: sY },
+      { type: 'search', cursor: 'nesw-resize', x: sX + sW, y: sY },
+      { type: 'search', cursor: 'nwse-resize', x: sX + sW, y: sY + sH },
+      { type: 'search', cursor: 'nesw-resize', x: sX, y: sY + sH }
+    ];
+    for (const corner of searchCorners) {
+      if (Math.hypot(mx - corner.x, my - corner.y) <= HIT_DIST) {
+        return { ...corner, targetId: active.id };
+      }
+    }
+
+    // 1-3. 搜尋範圍框內部平移
+    if (mx >= sX && mx <= sX + sW && my >= sY && my <= sY + sH) {
+      return { type: 'move', cursor: 'move', targetId: active.id, cx, cy };
+    }
   }
 
-  // 2. 搜尋範圍框（黃框）四角手柄
-  const searchX = Math.max(0, Math.min(canvasWidth - r * 2, cx - r));
-  const searchY = Math.max(0, Math.min(canvasHeight - r * 2, cy - r));
-  const searchW = Math.min(r * 2, canvasWidth - searchX);
-  const searchH = Math.min(r * 2, canvasHeight - searchY);
-
-  const searchCorners = [
-    { type: 'search', cursor: 'nwse-resize', x: searchX, y: searchY },
-    { type: 'search', cursor: 'nesw-resize', x: searchX + searchW, y: searchY },
-    { type: 'search', cursor: 'nwse-resize', x: searchX + searchW, y: searchY + searchH },
-    { type: 'search', cursor: 'nesw-resize', x: searchX, y: searchY + searchH }
-  ];
-  for (const corner of searchCorners) {
-    if (Math.hypot(mx - corner.x, my - corner.y) <= HIT_DIST) return corner;
-  }
-
-  // 3. ★ 黃色搜尋框內部任意位置：未命中四角時，一律觸發整體平移
-  if (mx >= searchX && mx <= searchX + searchW && my >= searchY && my <= searchY + searchH) {
-    return { type: 'move', cursor: 'move', cx, cy };
+  // 2. 若未命中作用中手柄，檢測點擊是否落在其他目標框上（直接切換選取該目標）
+  for (const t of targets) {
+    if (t.id === activeTargetId || !t.center) continue;
+    const half = t.templateSize / 2;
+    if (mx >= t.center.cx - half && mx <= t.center.cx + half &&
+        my >= t.center.cy - half && my <= t.center.cy + half) {
+      return { type: 'switchTarget', cursor: 'pointer', targetId: t.id };
+    }
   }
 
   return null;
 }
 
-// 繪製追蹤 Gizmo
-export function drawTrackingGizmo(ctx, {
-  searchX, searchY, searchW, searchH,
-  searchCenterX, searchCenterY, searchRadius,
-  matchBox,
-  centerX, centerY,
-  isLost = false,
-  showHandles = true
-}) {
+// 繪製單一目標的 Gizmo
+export function drawSingleGizmo(ctx, target, isActive = false, isLost = false, showHandles = true) {
+  if (!target || !target.center) return;
+  const { cx, cy } = target.center;
+  const tSize = target.templateSize;
+  const halfT = Math.floor(tSize / 2);
+  const r = target.searchRadius;
+  const mainColor = isLost ? '#ef4444' : target.color;
+
   ctx.save();
 
-  // 1. 搜尋範圍框
-  const searchColor = isLost ? '#ef4444' : 'rgba(245, 158, 11, 0.85)';
-  const searchFill = isLost ? 'rgba(239, 68, 68, 0.08)' : 'rgba(245, 158, 11, 0.03)';
+  // 若為非作用中目標，僅精簡繪製目標方框與十字準心
+  if (!isActive) {
+    ctx.strokeStyle = mainColor;
+    ctx.lineWidth = 1.2;
+    ctx.strokeRect(cx - halfT, cy - halfT, tSize, tSize);
 
-  ctx.strokeStyle = searchColor;
+    // 名稱標籤
+    ctx.fillStyle = mainColor;
+    ctx.font = 'bold 11px monospace';
+    ctx.fillText(target.name, cx - halfT, cy - halfT - 4);
+
+    // 準心
+    ctx.beginPath();
+    ctx.arc(cx, cy, 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    return;
+  }
+
+  // 作用中目標：完整繪製搜尋框、目標框、調整把手與十字線
+  const sX = Math.max(0, cx - r);
+  const sY = Math.max(0, cy - r);
+  const sW = r * 2;
+  const sH = r * 2;
+
+  // 搜尋半徑範圍
+  ctx.strokeStyle = isLost ? '#ef4444' : 'rgba(245, 158, 11, 0.85)';
+  ctx.fillStyle = isLost ? 'rgba(239, 68, 68, 0.08)' : 'rgba(245, 158, 11, 0.03)';
   ctx.lineWidth = 1.2;
   ctx.setLineDash([4, 4]);
-  ctx.fillStyle = searchFill;
-  ctx.fillRect(searchX, searchY, searchW, searchH);
-  ctx.strokeRect(searchX, searchY, searchW, searchH);
+  ctx.fillRect(sX, sY, sW, sH);
+  ctx.strokeRect(sX, sY, sW, sH);
 
-  if (searchCenterX !== undefined && searchCenterY !== undefined && searchRadius) {
-    ctx.beginPath();
-    ctx.arc(searchCenterX, searchCenterY, searchRadius, 0, Math.PI * 2);
-    ctx.strokeStyle = isLost ? 'rgba(239, 68, 68, 0.35)' : 'rgba(245, 158, 11, 0.2)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-  }
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.strokeStyle = isLost ? 'rgba(239, 68, 68, 0.35)' : 'rgba(245, 158, 11, 0.2)';
+  ctx.stroke();
   ctx.setLineDash([]);
 
-  // 搜尋框控制手柄
   if (showHandles) {
     const handleCol = isLost ? '#ef4444' : '#f59e0b';
-    drawHandle(ctx, searchX, searchY, handleCol);
-    drawHandle(ctx, searchX + searchW, searchY, handleCol);
-    drawHandle(ctx, searchX + searchW, searchY + searchH, handleCol);
-    drawHandle(ctx, searchX, searchY + searchH, handleCol);
+    drawHandle(ctx, sX, sY, handleCol);
+    drawHandle(ctx, sX + sW, sY, handleCol);
+    drawHandle(ctx, sX + sW, sY + sH, handleCol);
+    drawHandle(ctx, sX, sY + sH, handleCol);
   }
 
-  // 2. 目標框
-  if (matchBox) {
-    ctx.strokeStyle = '#22c55e';
-    ctx.lineWidth = isLost ? 2 : 1.2;
-    ctx.strokeRect(matchBox.x, matchBox.y, matchBox.width, matchBox.height);
+  // 目標框
+  ctx.strokeStyle = mainColor;
+  ctx.lineWidth = isLost ? 2 : 1.5;
+  ctx.strokeRect(cx - halfT, cy - halfT, tSize, tSize);
 
-    if (showHandles) {
-      drawHandle(ctx, matchBox.x, matchBox.y, '#22c55e');
-      drawHandle(ctx, matchBox.x + matchBox.width, matchBox.y, '#22c55e');
-      drawHandle(ctx, matchBox.x + matchBox.width, matchBox.y + matchBox.height, '#22c55e');
-      drawHandle(ctx, matchBox.x, matchBox.y + matchBox.height, '#22c55e');
-    }
+  // 標籤名稱
+  ctx.fillStyle = mainColor;
+  ctx.font = 'bold 12px monospace';
+  ctx.fillText(`[${target.name}] ACTIVE`, cx - halfT, cy - halfT - 6);
+
+  if (showHandles) {
+    drawHandle(ctx, cx - halfT, cy - halfT, mainColor);
+    drawHandle(ctx, cx + halfT, cy - halfT, mainColor);
+    drawHandle(ctx, cx + halfT, cy + halfT, mainColor);
+    drawHandle(ctx, cx - halfT, cy + halfT, mainColor);
   }
 
-  // 3. 十字準心
-  const cx = centerX !== undefined ? centerX : searchCenterX;
-  const cy = centerY !== undefined ? centerY : searchCenterY;
-  if (cx !== undefined && cy !== undefined) {
-    const crossSize = 5;
-    ctx.lineWidth = 1.2;
-    ctx.strokeStyle = isLost ? '#ef4444' : '#22c55e';
-
-    ctx.beginPath();
-    ctx.moveTo(cx - crossSize, cy);
-    ctx.lineTo(cx + crossSize, cy);
-    ctx.moveTo(cx, cy - crossSize);
-    ctx.lineTo(cx, cy + crossSize);
-    ctx.stroke();
-
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.arc(cx, cy, 1.5, 0, Math.PI * 2);
-    ctx.fill();
-  }
+  // 十字線
+  ctx.strokeStyle = mainColor;
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(cx - 6, cy); ctx.lineTo(cx + 6, cy);
+  ctx.moveTo(cx, cy - 6); ctx.lineTo(cx, cy + 6);
+  ctx.stroke();
 
   ctx.restore();
 }
 
-// 自動追蹤迴圈
+// 繪製所有目標的 Gizmo
+export function drawAllGizmos(ctx, lostTargetId = null, showHandles = true) {
+  for (const t of targets) {
+    const isAct = (t.id === activeTargetId);
+    const isLost = (t.id === lostTargetId);
+    drawSingleGizmo(ctx, t, isAct, isLost, showHandles);
+  }
+}
+
+// 多目標自動追蹤主迴圈
 export async function runAutoTrack({
   video,
   canvas,
   pxPerMeter,
-  searchRadius,
   threshold = 0.55,
   renderFrame,
   transformCoords,
   onFrameUpdate,
   onTargetLost,
   isTrackingCheck,
-  startTime = 0,             // ★ 新增：支援指定起始時間
-  initialData = []           // ★ 新增：接續先前的追蹤資料
+  startTime = 0
 }) {
-  if (!targetBBox || !templatePatch || !video) return initialData;
+  if (targets.length === 0 || !video) return;
 
   const ctx = canvas.getContext('2d');
-  const trackingData = [...initialData];
   const fps = 30;
   const frameDuration = 1 / fps;
   let frameIdx = Math.round(startTime * fps);
 
-  let currentCenterX = targetCenter ? targetCenter.cx : (targetBBox.x + targetBBox.width / 2);
-  let currentCenterY = targetCenter ? targetCenter.cy : (targetBBox.y + targetBBox.height / 2);
-  let radius = searchRadius || currentSearchRadius;
-
   for (let t = startTime; t < video.duration; t += frameDuration) {
-    // 檢查外部是否按下了暫停
     if (typeof isTrackingCheck === 'function' && !isTrackingCheck()) {
       break;
     }
 
     await seekTo(video, t);
 
+    // 渲染基礎無標註影格以擷取影像像素
     if (typeof renderFrame === 'function') {
       renderFrame(false);
     } else {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     }
 
-    radius = currentSearchRadius;
-    const halfT = Math.floor(templateSize / 2);
-    const searchX = Math.max(0, Math.min(canvas.width - radius * 2, currentCenterX - radius));
-    const searchY = Math.max(0, Math.min(canvas.height - radius * 2, currentCenterY - radius));
-    const searchW = Math.min(radius * 2, canvas.width - searchX);
-    const searchH = Math.min(radius * 2, canvas.height - searchY);
+    const currentFrameData = {
+      frame: frameIdx,
+      time: t.toFixed(3),
+      targets: {}
+    };
 
-    let match = { score: -1, x: 0, y: 0 };
-    if (searchW >= templateSize && searchH >= templateSize) {
-      const searchImgData = ctx.getImageData(searchX, searchY, searchW, searchH);
-      match = matchTemplateNCC(searchImgData, searchW, searchH, templatePatch);
-    }
+    // 同步對所有目標點執行匹配
+    for (const target of targets) {
+      const { cx, cy } = target.center;
+      const radius = target.searchRadius;
+      const tSize = target.templateSize;
+      const halfT = Math.floor(tSize / 2);
 
-    if (typeof renderFrame === 'function') {
-      renderFrame(true);
-    }
+      const sX = Math.max(0, Math.min(canvas.width - radius * 2, cx - radius));
+      const sY = Math.max(0, Math.min(canvas.height - radius * 2, cy - radius));
+      const sW = Math.min(radius * 2, canvas.width - sX);
+      const sH = Math.min(radius * 2, canvas.height - sY);
 
-    // 門檻判定
-    if (match.score >= threshold) {
-      currentCenterX = searchX + match.x + halfT;
-      currentCenterY = searchY + match.y + halfT;
-      targetCenter = { cx: currentCenterX, cy: currentCenterY };
-      recordTrackingPoint(currentCenterX, currentCenterY, match.score, t, frameIdx);
-    } else {
-      console.warn(`第 ${frameIdx} 幀目標遺失 (得分: ${match.score.toFixed(2)} < 門檻: ${threshold.toFixed(2)})`);
+      let match = { score: -1, x: 0, y: 0 };
+      if (sW >= tSize && sH >= tSize && target.templatePatch) {
+        const searchImgData = ctx.getImageData(sX, sY, sW, sH);
+        match = matchTemplateNCC(searchImgData, sW, sH, target.templatePatch);
+      }
 
-      if (typeof onTargetLost === 'function') {
-        const decision = await onTargetLost({
-          frameIdx,
-          time: t,
-          score: match.score,
-          cx: currentCenterX,
-          cy: currentCenterY
-        });
+      let newCx = cx;
+      let newCy = cy;
+      let finalScore = match.score;
 
-        if (decision === 'abort') {
-          break;
-        } else if (decision === 'continue') {
-          if (targetCenter) {
-            currentCenterX = targetCenter.cx;
-            currentCenterY = targetCenter.cy;
-            recordTrackingPoint(currentCenterX, currentCenterY, 1.0, t, frameIdx);
+      if (match.score >= threshold) {
+        newCx = sX + match.x + halfT;
+        newCy = sY + match.y + halfT;
+        target.center = { cx: newCx, cy: newCy };
+      } else {
+        // 目標遺失事件回調
+        if (typeof onTargetLost === 'function') {
+          activeTargetId = target.id;
+          const decision = await onTargetLost({
+            target,
+            frameIdx,
+            time: t,
+            score: match.score,
+            cx,
+            cy
+          });
+
+          if (decision === 'abort') {
+            return;
+          } else if (decision === 'continue') {
+            newCx = target.center.cx;
+            newCy = target.center.cy;
+            finalScore = 1.0;
           }
         }
       }
+
+      // 轉換座標與記錄
+      let x_m = 0, y_m = 0;
+      if (typeof transformCoords === 'function') {
+        const trans = transformCoords(newCx, newCy);
+        x_m = trans.x_m;
+        y_m = trans.y_m;
+      } else {
+        x_m = pxPerMeter ? newCx / pxPerMeter : 0;
+        y_m = pxPerMeter ? (canvas.height - newCy) / pxPerMeter : 0;
+      }
+
+      const ptRecord = {
+        frame: frameIdx,
+        time: t.toFixed(3),
+        cx: newCx,
+        cy: newCy,
+        x_px: newCx.toFixed(1),
+        y_px: newCy.toFixed(1),
+        x_m: Number(x_m).toFixed(4),
+        y_m: Number(y_m).toFixed(4),
+        score: Number(finalScore).toFixed(3)
+      };
+
+      target.trajectory.push(ptRecord);
+      currentFrameData.targets[target.id] = ptRecord;
     }
 
+    // 重新繪製含疊加 Gizmo 標註
+    if (typeof renderFrame === 'function') renderFrame(true);
+    drawAllGizmos(ctx, null, false);
+
+    if (onFrameUpdate) onFrameUpdate(currentFrameData, targets);
     frameIdx++;
     await new Promise(r => setTimeout(r, 0));
   }
-
-  function recordTrackingPoint(cx, cy, score, timeSec, idx) {
-    let x_m = 0, y_m = 0;
-    if (typeof transformCoords === 'function') {
-      const trans = transformCoords(cx, cy);
-      x_m = trans.x_m;
-      y_m = trans.y_m;
-    } else {
-      x_m = pxPerMeter ? cx / pxPerMeter : 0;
-      y_m = pxPerMeter ? (canvas.height - cy) / pxPerMeter : 0;
-    }
-
-    const frameRes = {
-      frame: idx,
-      time: timeSec.toFixed(3),
-      x_px: cx.toFixed(1),
-      y_px: cy.toFixed(1),
-      x_m: Number(x_m).toFixed(4),
-      y_m: Number(y_m).toFixed(4),
-      score: Number(score).toFixed(3),
-      cx,
-      cy,
-      timestamp: timeSec * 1_000_000
-    };
-
-    trackingData.push(frameRes);
-
-    const half = Math.floor(templateSize / 2);
-    drawTrackingGizmo(ctx, {
-      searchX: Math.max(0, cx - currentSearchRadius),
-      searchY: Math.max(0, cy - currentSearchRadius),
-      searchW: Math.min(currentSearchRadius * 2, canvas.width - (cx - currentSearchRadius)),
-      searchH: Math.min(currentSearchRadius * 2, canvas.height - (cy - currentSearchRadius)),
-      searchCenterX: cx,
-      searchCenterY: cy,
-      searchRadius: currentSearchRadius,
-      matchBox: {
-        x: cx - half,
-        y: cy - half,
-        width: templateSize,
-        height: templateSize
-      },
-      centerX: cx,
-      centerY: cy,
-      isLost: false,
-      showHandles: false
-    });
-
-    if (onFrameUpdate) onFrameUpdate(frameRes, trackingData);
-  }
-
-  // ★ 移除原先強制 jump 回 0 秒的動作，使影片停留在當前幀以利後續校正
-  return trackingData;
-}
-
-export function getTargetBBox() {
-  return targetBBox;
-}
-
-export function getTargetColor() {
-  return templatePatch !== null;
 }

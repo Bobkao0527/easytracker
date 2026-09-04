@@ -1,20 +1,22 @@
 // app.js
 import {resetCalibration, addCalibrationPoint, getPxPerMeter, getCalibrationPoints, transformCoordinates, autoCalculateK1, calculateHomographyFrom4Points} from './standard.js';
-import {resetTrackState, selectTarget, getTargetBBox, getTargetColor, setTargetCenter, runAutoTrack, drawTrackingGizmo, hitTestHandles, updateTemplatePatch, getTargetCenter, getTemplateSize, setSearchRadius, getSearchRadius, seekTo} from './track.js';
+import {
+  resetTrackState, addTargetPoint, getAllTargets, getActiveTarget, setActiveTargetId,
+  removeTarget, setTargetCenter, setSearchRadius, getSearchRadius, getTemplateSize,
+  updateTemplatePatch, hitTestHandles, drawAllGizmos, runAutoTrack, seekTo
+} from './track.js';
 import {initChart, clearChart, renderChart} from './chart.js';
 import { exportCSV } from './export.js';
 import {initZoomPan, resetZoomPan} from './zoomPan.js';
 import { initDistortionRenderer, renderDistortedVideo, setHomographyMatrix } from './distortion.js';
 
 let video, canvas, ctx;
-let mode = 'idle'; 
+let mode = 'idle'; // 'idle' | 'calibrate' | 'selectTarget' | 'pausedCorrection' | ...
 
-let trackingData = [];
 let isTracking = false;
-let isPaused = false; // ★ 追蹤暫停狀態
+let isPaused = false;
 let renderLoopId = null;
 let currentVideoUrl = null;
-let roiStartPoint = null;
 
 let activeDragMode = null;
 let dragOffset = { x: 0, y: 0 };
@@ -25,19 +27,20 @@ let pendingTargetSize = null;
 
 let lastFpsCalcTime = 0;
 let framesSinceLastCalc = 0;
+let lostTargetObj = null;
 
 let k1LinePoints = [];
 const K1_TARGET_POINTS = 6;
 let rectCorners = [];
-const CORNER_NAMES = ['【左上角 TL】', '【右上角 TR】', '【右下角 BR】', '【左下角 BL】'];
+const CORNER_NAMES = ['【遠處左角】', '【遠處右角】', '【近處右角】', '【近處左角】'];
 let currentHomography = [1,0,0, 0,1,0, 0,0,1];
 
 const UI_UPDATE_INTERVAL = 1000 / 30;
 const CHART_UPDATE_INTERVAL = 1000 / 10;
 let lastUIUpdateTime = 0;
 let lastChartUpdateTime = 0;
+let currentChartFilter = 'all'; // 'all' 或特定的 targetId
 
-// ★ 時間軸與播放元素
 let timeSlider, timeDisplay, btnPlayPause, btnPrevFrame, btnNextFrame;
 
 window.onload = () => {
@@ -64,14 +67,14 @@ window.onload = () => {
     thresholdVal.innerText = parseFloat(e.target.value).toFixed(2);
   });
 
-  // 暫停校正工具列按鈕 (NCC 門檻過低觸發時)
+  // 暫停校正工具列
   document.getElementById('btnResumeTrack')?.addEventListener('click', () => {
     if (resolveTargetCorrection) {
       document.getElementById('lostTargetBar').style.display = 'none';
-      const center = getTargetCenter();
-      if (center) {
+      const active = getActiveTarget();
+      if (active && active.center) {
         renderCurrentFrame(false);
-        updateTemplatePatch(ctx, center.cx, center.cy, getTemplateSize());
+        updateTemplatePatch(ctx, active.center.cx, active.center.cy, active.templateSize, active.id);
       }
       mode = 'idle';
       resolveTargetCorrection('continue');
@@ -83,7 +86,7 @@ window.onload = () => {
     if (resolveTargetCorrection) {
       document.getElementById('lostTargetBar').style.display = 'none';
       mode = 'idle';
-      resolveTargetCorrection('skip');
+      resolveTargetCorrection('continue'); // 保留上一幀位置繼續
       resolveTargetCorrection = null;
     }
   });
@@ -100,40 +103,44 @@ window.onload = () => {
   document.getElementById('btnCalibrate').addEventListener('click', () => {
     mode = 'calibrate';
     resetCalibration();
-    document.getElementById('status').innerText = '請點擊影片上的兩點設定真實長度';
+    document.getElementById('status').innerText = '請在畫面點選兩基準點設定實體公尺距離';
   });
 
-  const start4PointMode = () => {
+  document.getElementById('btnAutoPerspective')?.addEventListener('click', () => {
     mode = 'select4Point';
     rectCorners = [];
     currentHomography = [1,0,0, 0,1,0, 0,0,1];
     setHomographyMatrix(currentHomography);
     renderCurrentFrame(true);
     document.getElementById('status').innerText = `【4點矩形透視校正】請點選已知長方形的 ${CORNER_NAMES[0]} (1/4)`;
-  };
+  });
 
-  document.getElementById('btnAutoPerspective')?.addEventListener('click', start4PointMode);
   document.getElementById('btnAutoK1')?.addEventListener('click', () => {
     mode = 'selectK1Line';
     k1LinePoints = [];
     document.getElementById('status').innerText = `【k1 畸變校正】請點擊同一直線上 ${K1_TARGET_POINTS} 個點 (0/${K1_TARGET_POINTS})`;
   });
 
-  document.getElementById('btnROI')?.addEventListener('click', () => {
-    mode = 'selectROI';
-    document.getElementById('status').innerText = '請在影片上拉框選取運動邊界 (ROI)';
-  });
-
+  // 多追蹤點按鈕事件
   document.getElementById('btnTrack').addEventListener('click', () => {
     mode = 'selectTarget';
-    document.getElementById('status').innerText = '請點擊目標物體中心 (拖曳內部可平移，拖曳四角可縮放)';
+    document.getElementById('status').innerText = '【新增追蹤點】請直接在畫布上點選欲追蹤的目標中心（可連續點選加入多點）';
   });
 
-  // 追蹤主按鈕 (開始/暫停/繼續)
+  document.getElementById('btnClearTargets')?.addEventListener('click', () => {
+    if (confirm('確定要清除所有追蹤點嗎？')) {
+      resetTrackState();
+      renderCurrentFrame(true);
+      updateTargetListUI();
+      updateChartFilterUI();
+      document.getElementById('btnProcess').disabled = true;
+      document.getElementById('status').innerText = '已清除所有追蹤目標';
+    }
+  });
+
   document.getElementById('btnProcess').addEventListener('click', handleTrackButtonAction);
   document.getElementById('btnExport').addEventListener('click', handleExport);
 
-  // ★ 時間軸控制項事件綁定
   initPlaybackEvents();
 
   canvas.addEventListener('mousedown', handleCanvasMouseDown);
@@ -142,7 +149,6 @@ window.onload = () => {
   canvas.addEventListener('click', handleCanvasClick);
 };
 
-// 格式化時間 (mm:ss.SS)
 function formatTime(sec) {
   if (isNaN(sec)) return '00:00.00';
   const m = Math.floor(sec / 60);
@@ -159,7 +165,6 @@ function updateTimelineUI() {
   }
 }
 
-// 播放與時間軸事件設定
 function initPlaybackEvents() {
   btnPlayPause?.addEventListener('click', () => {
     if (isTracking) {
@@ -175,42 +180,33 @@ function initPlaybackEvents() {
     }
   });
 
-  // 2. 拖曳時間軸
   timeSlider?.addEventListener('input', async (e) => {
     if (isTracking) pauseAutoTrack();
     const t = parseFloat(e.target.value);
     await seekTo(video, t);
     renderCurrentFrame(true);
-    
-    // ★ 關鍵：先同步該幀的歷史座標，再畫出 Gizmo
-    syncGizmoToCurrentTime();
-    if (getTargetColor()) redrawActiveGizmo();
+    syncAllGizmosToCurrentTime();
+    redrawActiveGizmo();
     updateTimelineUI();
   });
 
-  // 3. 上一幀微調
   btnPrevFrame?.addEventListener('click', async () => {
     if (isTracking) pauseAutoTrack();
     const newT = Math.max(0, video.currentTime - 1 / 30);
     await seekTo(video, newT);
     renderCurrentFrame(true);
-    
-    // ★ 關鍵：同步上一幀狀態
-    syncGizmoToCurrentTime();
-    if (getTargetColor()) redrawActiveGizmo();
+    syncAllGizmosToCurrentTime();
+    redrawActiveGizmo();
     updateTimelineUI();
   });
 
-  // 4. 下一幀微調
   btnNextFrame?.addEventListener('click', async () => {
     if (isTracking) pauseAutoTrack();
     const newT = Math.min(video.duration || 0, video.currentTime + 1 / 30);
     await seekTo(video, newT);
     renderCurrentFrame(true);
-    
-    // ★ 關鍵：同步下一幀狀態
-    syncGizmoToCurrentTime();
-    if (getTargetColor()) redrawActiveGizmo();
+    syncAllGizmosToCurrentTime();
+    redrawActiveGizmo();
     updateTimelineUI();
   });
 }
@@ -226,35 +222,8 @@ function getCanvasCoords(e) {
 }
 
 function redrawActiveGizmo() {
-  const targetCenter = getTargetCenter();
-  if (!targetCenter) return;
-
   renderCurrentFrame(true);
-
-  const tSize = pendingTargetSize || getTemplateSize();
-  const halfT = Math.floor(tSize / 2);
-  const searchRadius = getSearchRadius();
-  const { cx, cy } = targetCenter;
-
-  const searchX = Math.max(0, Math.min(canvas.width - searchRadius * 2, cx - searchRadius));
-  const searchY = Math.max(0, Math.min(canvas.height - searchRadius * 2, cy - searchRadius));
-  const searchW = Math.min(searchRadius * 2, canvas.width - searchX);
-  const searchH = Math.min(searchRadius * 2, canvas.height - searchY);
-
-  drawTrackingGizmo(ctx, {
-    searchX, searchY, searchW, searchH,
-    searchCenterX: cx, searchCenterY: cy,
-    searchRadius,
-    matchBox: {
-      x: cx - halfT,
-      y: cy - halfT,
-      width: tSize,
-      height: tSize
-    },
-    centerX: cx, centerY: cy,
-    isLost: mode === 'pausedCorrection',
-    showHandles: true
-  });
+  drawAllGizmos(ctx, lostTargetObj ? lostTargetObj.id : null, true);
 }
 
 function handleCanvasMouseDown(e) {
@@ -262,21 +231,22 @@ function handleCanvasMouseDown(e) {
   mouseDownPos = { x, y };
   hasMovedDuringDrag = false;
 
-  // 只要不是正在連續追蹤中，均允許選取或調整手柄
-  if (getTargetColor() && (!isTracking || mode === 'pausedCorrection')) {
+  if (getAllTargets().length > 0 && (!isTracking || mode === 'pausedCorrection')) {
     const hit = hitTestHandles(x, y, canvas.width, canvas.height);
     if (hit) {
+      if (hit.type === 'switchTarget') {
+        setActiveTargetId(hit.targetId);
+        updateTargetListUI();
+        redrawActiveGizmo();
+        return;
+      }
       activeDragMode = hit.type;
-      const center = getTargetCenter();
-      if (center) {
-        dragOffset = { x: x - center.cx, y: y - center.cy };
+      const active = getActiveTarget();
+      if (active && active.center) {
+        dragOffset = { x: x - active.center.cx, y: y - active.center.cy };
       }
       return;
     }
-  }
-
-  if (mode === 'selectROI') {
-    roiStartPoint = { x, y };
   }
 }
 
@@ -288,75 +258,57 @@ function handleCanvasMouseMove(e) {
       hasMovedDuringDrag = true;
     }
 
-    const targetCenter = getTargetCenter();
-    if (!targetCenter) return;
-    const { cx, cy } = targetCenter;
+    const active = getActiveTarget();
+    if (!active || !active.center) return;
+    const { cx, cy } = active.center;
 
     if (activeDragMode === 'move') {
       const newCx = Math.max(10, Math.min(canvas.width - 10, x - dragOffset.x));
       const newCy = Math.max(10, Math.min(canvas.height - 10, y - dragOffset.y));
-      setTargetCenter(newCx, newCy);
+      setTargetCenter(newCx, newCy, active.id);
       redrawActiveGizmo();
-      document.getElementById('status').innerText = `正在移動目標至: (${Math.round(newCx)}, ${Math.round(newCy)})`;
+      document.getElementById('status').innerText = `正在移動目標 [${active.name}] 至: (${Math.round(newCx)}, ${Math.round(newCy)})`;
     } else if (activeDragMode === 'target') {
       const dist = Math.max(Math.abs(x - cx), Math.abs(y - cy));
-      pendingTargetSize = Math.max(10, Math.min(dist * 2, getSearchRadius() * 2 - 6));
+      pendingTargetSize = Math.max(10, Math.min(dist * 2, active.searchRadius * 2 - 6));
+      active.templateSize = pendingTargetSize;
       redrawActiveGizmo();
-      document.getElementById('status').innerText = `正在調整目標尺寸: ${Math.round(pendingTargetSize)} px`;
+      document.getElementById('status').innerText = `正在調整 [${active.name}] 尺寸: ${Math.round(pendingTargetSize)} px`;
     } else if (activeDragMode === 'search') {
       const dist = Math.max(Math.abs(x - cx), Math.abs(y - cy));
-      const newRadius = Math.max(getTemplateSize() / 2 + 5, dist);
+      const newRadius = Math.max(active.templateSize / 2 + 5, dist);
       setSearchRadius(newRadius);
       redrawActiveGizmo();
-      document.getElementById('status').innerText = `已調整搜尋範圍半徑為: ${Math.round(newRadius)} px`;
+      document.getElementById('status').innerText = `已調整 [${active.name}] 搜尋半徑: ${Math.round(newRadius)} px`;
     }
     return;
   }
 
-  if (getTargetColor() && (!isTracking || mode === 'pausedCorrection')) {
+  // 滑鼠懸浮樣式檢測
+  if (getAllTargets().length > 0 && (!isTracking || mode === 'pausedCorrection')) {
     const hit = hitTestHandles(x, y, canvas.width, canvas.height);
     canvas.style.cursor = hit ? hit.cursor : 'default';
   } else {
     canvas.style.cursor = 'default';
   }
-
-  if (mode === 'selectROI' && roiStartPoint) {
-    const minX = Math.min(roiStartPoint.x, x);
-    const minY = Math.min(roiStartPoint.y, y);
-    const width = Math.abs(x - roiStartPoint.x);
-    const height = Math.abs(y - roiStartPoint.y);
-
-    renderCurrentFrame(true);
-    ctx.strokeStyle = '#f59e0b';
-    ctx.lineWidth = 1.2;
-    ctx.setLineDash([4, 4]);
-    ctx.strokeRect(minX, minY, width, height);
-    ctx.setLineDash([]);
-  }
 }
 
 function handleCanvasMouseUp() {
   if (activeDragMode) {
-    const center = getTargetCenter();
-    if (center) {
+    const active = getActiveTarget();
+    if (active && active.center) {
       renderCurrentFrame(false);
-      const finalSize = pendingTargetSize || getTemplateSize();
-      updateTemplatePatch(ctx, center.cx, center.cy, finalSize);
+      const finalSize = pendingTargetSize || active.templateSize;
+      updateTemplatePatch(ctx, active.center.cx, active.center.cy, finalSize, active.id);
       pendingTargetSize = null;
 
-      // ★ 新增：微調完成後，將當前幀的座標回寫進 trackingData
       if (!isTracking) {
-        updateCurrentFrameData(center.cx, center.cy);
+        updateCurrentFrameData(active.id, active.center.cx, active.center.cy);
       }
     }
     activeDragMode = null;
     redrawActiveGizmo();
     return;
-  }
-
-  if (mode === 'selectROI' && roiStartPoint) {
-    mode = 'idle';
-    roiStartPoint = null;
   }
 }
 
@@ -369,12 +321,14 @@ function handleCanvasClick(e) {
   const { x, y } = getCanvasCoords(e);
   if (x < 0 || x > canvas.width || y < 0 || y > canvas.height) return;
 
-  // 暫停校正時點擊空白處重設中心點
   if (mode === 'pausedCorrection') {
-    renderCurrentFrame(false);
-    updateTemplatePatch(ctx, x, y, getTemplateSize());
-    redrawActiveGizmo();
-    document.getElementById('status').innerText = `已校正目標至點位: (${Math.round(x)}, ${Math.round(y)})，可點擊「確認修正」或直接拖曳微調`;
+    const active = getActiveTarget();
+    if (active) {
+      renderCurrentFrame(false);
+      updateTemplatePatch(ctx, x, y, active.templateSize, active.id);
+      redrawActiveGizmo();
+      document.getElementById('status').innerText = `已修正 [${active.name}] 至 (${Math.round(x)}, ${Math.round(y)})，請按「確認修正」繼續`;
+    }
     return;
   }
 
@@ -382,6 +336,7 @@ function handleCanvasClick(e) {
     handleCalibrationClick(x, y);
   } else if (mode === 'selectTarget') {
     handleTargetSelection(x, y);
+    updateChartFilterUI();
   } else if (mode === 'select4Point') {
     handle4PointClick(x, y);
   } else if (mode === 'selectK1Line') {
@@ -391,16 +346,60 @@ function handleCanvasClick(e) {
 
 function handleTargetSelection(x, y) {
   renderCurrentFrame(false);
-  selectTarget(x, y, ctx, 28);
+  const newTarget = addTargetPoint(x, y, ctx, 28);
+  updateTargetListUI();
   redrawActiveGizmo();
 
-  document.getElementById('status').innerText = '目標已就緒！拖曳綠框可平移，拖曳四角可縮放。';
+  document.getElementById('status').innerText = `已加入目標 [${newTarget.name}]！可繼續點選新增更多點，或點擊「Step 3」開始追蹤`;
   document.getElementById('btnProcess').disabled = false;
-  mode = 'idle';
 }
 
-function handleTrackingFrameUpdate(frameData, allData) {
-  if (!frameData || !Array.isArray(allData)) return;
+// 動態更新側邊欄追蹤點清單 UI
+function updateTargetListUI() {
+  const container = document.getElementById('targetListContainer');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const targets = getAllTargets();
+  const active = getActiveTarget();
+
+  targets.forEach((t) => {
+    const chip = document.createElement('div');
+    chip.className = `target-chip ${active && active.id === t.id ? 'active' : ''}`;
+    chip.style.borderColor = t.color;
+
+    chip.innerHTML = `
+      <span class="chip-color" style="background: ${t.color}"></span>
+      <span class="chip-label">${t.name}</span>
+      <button class="chip-del" title="刪除此點">&times;</button>
+    `;
+
+    chip.addEventListener('click', (e) => {
+      if (e.target.classList.contains('chip-del')) {
+        e.stopPropagation();
+        removeTarget(t.id);
+        updateTargetListUI();
+        updateChartFilterUI();
+        redrawActiveGizmo();
+        if (getAllTargets().length === 0) {
+          document.getElementById('btnProcess').disabled = true;
+        }
+        return;
+      }
+      setActiveTargetId(t.id);
+      updateTargetListUI();
+      redrawActiveGizmo();
+      if (t.trajectory && t.trajectory.length) {
+        renderChart(t.trajectory);
+      }
+    });
+
+    container.appendChild(chip);
+  });
+}
+
+function handleTrackingFrameUpdate(frameData, allTargets) {
+  if (!frameData || !Array.isArray(allTargets)) return;
 
   updateTimelineUI();
 
@@ -418,14 +417,19 @@ function handleTrackingFrameUpdate(frameData, allData) {
     framesSinceLastCalc = 0;
   }
 
+  const active = getActiveTarget();
   if (now - lastUIUpdateTime >= UI_UPDATE_INTERVAL) {
     lastUIUpdateTime = now;
-    updateTrackingUI(frameData, allData);
+    if (active && frameData.targets[active.id]) {
+      updateTrackingUI(frameData.targets[active.id], active.trajectory);
+    }
   }
 
   if (now - lastChartUpdateTime >= CHART_UPDATE_INTERVAL) {
     lastChartUpdateTime = now;
-    renderChart(allData);
+    if (allTargets.length > 0) {
+      renderChart(allTargets, currentChartFilter);
+    }
   }
 }
 
@@ -435,12 +439,12 @@ function handleVideoUpload(e) {
 
   isTracking = false;
   isPaused = false;
-  trackingData = [];
   mode = 'idle';
 
   resetCalibration();
   resetTrackState();
   resetZoomPan();
+  updateTargetListUI();
 
   const scaleDisplay = document.getElementById('scaleDisplay');
   if (scaleDisplay) scaleDisplay.innerText = '1000.00 px/m (預設)';
@@ -482,16 +486,13 @@ function handleVideoUpload(e) {
     document.getElementById('btnCalibrate').disabled = false;
     document.getElementById('btnTrack').disabled = false;
     document.getElementById('btnProcess').disabled = true;
-    document.getElementById('btnProcess').innerText = '3. 開始自動追蹤';
+    document.getElementById('btnProcess').innerText = '3. 啟動多點追蹤';
     document.getElementById('btnExport').disabled = true;
 
-    document.getElementById('status').innerText = '影片載入成功，請進行定標或選取目標';
+    document.getElementById('status').innerText = '影片載入成功，請定標或點擊「Step 2」新增追蹤點';
     startRenderLoop();
   };
 
-  video.onerror = () => {
-    document.getElementById('status').innerText = '影片無法讀取，請確認格式或重新選擇影片';
-  };
   video.load();
 }
 
@@ -519,7 +520,7 @@ function startRenderLoop() {
     if (!isTracking && !video.paused && !video.ended) {
       renderCurrentFrame();
       updateTimelineUI();
-      if (getTargetColor() && mode === 'idle') {
+      if (getAllTargets().length > 0 && mode === 'idle') {
         redrawActiveGizmo();
       }
     }
@@ -528,7 +529,6 @@ function startRenderLoop() {
   renderLoopId = requestAnimationFrame(renderLoop);
 }
 
-// ★ 追蹤按鈕總控：開始 / 暫停 / 繼續
 function handleTrackButtonAction() {
   if (isTracking) {
     pauseAutoTrack();
@@ -545,32 +545,41 @@ function pauseAutoTrack() {
     btnProcess.innerText = '▶ 繼續追蹤';
     btnProcess.disabled = false;
   }
-  document.getElementById('status').innerText = '已暫停追蹤！可拖動綠框調整位置或拖曳時間軸，確認後點擊「繼續追蹤」';
+  document.getElementById('status').innerText = '已暫停！可手動拖曳目標框微調或切換目標，確認後點擊「繼續追蹤」';
   renderCurrentFrame(true);
   redrawActiveGizmo();
   startRenderLoop();
 }
 
 async function startAutoTrack() {
-  const pxPerMeter = getPxPerMeter();
-  const searchRadius = getSearchRadius();
-  const threshold = parseFloat(document.getElementById('matchThreshold')?.value) || 0.55;
-
-  if (!getTargetBBox() || !getTargetColor()) {
-    alert('請先點選畫面中的目標物體！');
+  const targets = getAllTargets();
+  if (targets.length === 0) {
+    alert('請先點擊「Step 2」在畫面上選取至少一個目標點！');
     return;
   }
 
-  // 若是從暫停接續，修剪當前時間之後的舊資料，避免產生時間回溯與重疊數據
-  const currentSeekTime = video.currentTime;
+  const pxPerMeter = getPxPerMeter();
+  const threshold = parseFloat(document.getElementById('matchThreshold')?.value) || 0.55;
+  
+  // ★ 若影片在結尾，重新追蹤時自動回歸開頭 0 秒
+  let currentSeekTime = video.currentTime;
+  if (!isPaused && (video.ended || currentSeekTime >= (video.duration - 0.1))) {
+    currentSeekTime = 0;
+    await seekTo(video, 0);
+  }
+
+  // 若接續追蹤，修剪掉當前時間之後的舊數據
   if (isPaused) {
-    trackingData = trackingData.filter(d => parseFloat(d.time) < currentSeekTime - 0.001);
+    targets.forEach(t => {
+      t.trajectory = t.trajectory.filter(d => parseFloat(d.time) < currentSeekTime - 0.001);
+    });
   } else {
-    trackingData = [];
+    targets.forEach(t => { t.trajectory = []; });
   }
 
   isTracking = true;
   isPaused = false;
+  lostTargetObj = null;
 
   lastFpsCalcTime = performance.now();
   framesSinceLastCalc = 0;
@@ -578,7 +587,6 @@ async function startAutoTrack() {
 
   const btnProcess = document.getElementById('btnProcess');
   btnProcess.innerText = '⏸ 暫停追蹤';
-  btnProcess.disabled = false;
 
   document.getElementById('btnCalibrate').disabled = true;
   document.getElementById('btnTrack').disabled = true;
@@ -586,7 +594,7 @@ async function startAutoTrack() {
 
   const fpsDisplay = document.getElementById('fpsDisplay');
   if (fpsDisplay) fpsDisplay.innerText = '計算中...';
-  document.getElementById('status').innerText = '正在進行逐幀自動追蹤...';
+  document.getElementById('status').innerText = `正在同步追蹤 ${targets.length} 個點...`;
 
   if (renderLoopId !== null) {
     cancelAnimationFrame(renderLoopId);
@@ -594,14 +602,12 @@ async function startAutoTrack() {
   }
 
   try {
-    const result = await runAutoTrack({
+    await runAutoTrack({
       video,
       canvas,
       pxPerMeter,
-      searchRadius,
       threshold,
-      startTime: currentSeekTime,     // ★ 從當前時間點繼續
-      initialData: trackingData,      // ★ 接續前面已追蹤的數據
+      startTime: currentSeekTime,
       isTrackingCheck: () => isTracking,
       renderFrame: (withGrid) => renderCurrentFrame(withGrid),
       transformCoords: (cx, cy) => {
@@ -620,39 +626,39 @@ async function startAutoTrack() {
       onFrameUpdate: handleTrackingFrameUpdate,
       onTargetLost: (lostInfo) => {
         return new Promise((resolve) => {
+          lostTargetObj = lostInfo.target;
           resolveTargetCorrection = resolve;
           mode = 'pausedCorrection';
-          document.getElementById('lostTargetBar').style.display = 'flex';
-          document.getElementById('status').innerText = `目標在第 ${lostInfo.frameIdx} 幀遺失！請直接「點選物體新位置」或拖曳綠框校正`;
+          const lostBar = document.getElementById('lostTargetBar');
+          lostBar.style.display = 'flex';
+          document.getElementById('lostTargetMsg').innerText = `目標 [${lostInfo.target.name}] 在第 ${lostInfo.frameIdx} 幀特徵遺失！`;
+          document.getElementById('status').innerText = `目標 [${lostInfo.target.name}] 吻合度過低 (${lostInfo.score.toFixed(2)})，請於畫面修正點位`;
           renderCurrentFrame(true);
           redrawActiveGizmo();
         });
       }
     });
 
-    trackingData = Array.isArray(result) ? result : [];
-
-    if (trackingData.length) {
-      const last = trackingData[trackingData.length - 1];
-      updateTrackingUI(last, trackingData);
-      renderChart(trackingData);
-
+    const active = getActiveTarget();
+    if (active && active.trajectory.length) {
+      updateTrackingUI(active.trajectory[active.trajectory.length - 1], active.trajectory);
+      // ★ 修復：追蹤完成後直接繪製最新圖表，移除不存在的 now 判斷
+      renderChart(getAllTargets(), currentChartFilter);
+      
       const totalElapsedSec = (performance.now() - trackStartTime) / 1000;
-      const avgFPS = (trackingData.length / totalElapsedSec).toFixed(1);
+      const avgFPS = (active.trajectory.length / totalElapsedSec).toFixed(1);
       if (fpsDisplay) fpsDisplay.innerText = `均速 ${avgFPS} FPS`;
     }
 
-    // 若非人為暫停，代表影片播放完畢
     if (!isPaused) {
-      document.getElementById('status').innerText = `追蹤完成！共處理 ${trackingData.length} 幀`;
+      document.getElementById('status').innerText = `全數追蹤完成！共同步完成 ${targets.length} 個軌跡點`;
       btnProcess.innerText = '3. 重新追蹤';
     }
-    document.getElementById('btnExport').disabled = trackingData.length === 0;
+    document.getElementById('btnExport').disabled = false;
   } catch (err) {
     console.error('追蹤發生錯誤:', err);
-    document.getElementById('status').innerText = `追蹤失敗：${err?.message || '未知錯誤'}`;
-    if (fpsDisplay) fpsDisplay.innerText = '- FPS';
-    btnProcess.innerText = '3. 開始自動追蹤';
+    document.getElementById('status').innerText = `追蹤中斷：${err?.message || '未知錯誤'}`;
+    btnProcess.innerText = '3. 啟動多點追蹤';
   } finally {
     if (!isPaused) {
       isTracking = false;
@@ -660,6 +666,7 @@ async function startAutoTrack() {
       document.getElementById('btnTrack').disabled = false;
     }
     document.getElementById('lostTargetBar').style.display = 'none';
+    lostTargetObj = null;
 
     renderCurrentFrame(true);
     redrawActiveGizmo();
@@ -667,34 +674,88 @@ async function startAutoTrack() {
   }
 }
 
-// 其餘定標與幾何輔助函式保持原狀
-function handleCalibrationClick(x, y) {
-  const realLen = parseFloat(document.getElementById('scaleLength').value) || 1.0;
-  const result = addCalibrationPoint(x, y, realLen);
-  drawDot(x, y, '#ef4444');
+// 影格時間軸拖曳時，同步將所有目標點位置還原到該幀歷史座標
+function syncAllGizmosToCurrentTime() {
+  const targets = getAllTargets();
+  const curTime = video.currentTime;
+  const fps = 30;
+  const tolerance = (1 / fps) * 0.7;
 
-  if (result.completed) {
-    document.getElementById('scaleDisplay').innerText = `${result.pxPerMeter.toFixed(2)} px/m`;
-    document.getElementById('status').innerText = '定標完成！';
-    mode = 'idle';
+  targets.forEach(t => {
+    if (!t.trajectory || t.trajectory.length === 0) return;
+    let closest = null;
+    let minDiff = Infinity;
+    for (const pt of t.trajectory) {
+      const diff = Math.abs(parseFloat(pt.time) - curTime);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closest = pt;
+      }
+    }
+    if (closest && minDiff <= tolerance) {
+      setTargetCenter(closest.cx, closest.cy, t.id);
+    }
+  });
+
+  const active = getActiveTarget();
+  if (active && active.trajectory.length) {
+    const activePt = active.trajectory.find(pt => Math.abs(parseFloat(pt.time) - curTime) <= tolerance);
+    if (activePt) updateTrackingUI(activePt, active.trajectory);
   }
 }
 
-function drawDot(x, y, color) {
-  ctx.save();
-  ctx.fillStyle = color;
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.arc(x, y, 2.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
-  ctx.restore();
+// 手動調整特定目標位置後，覆寫該幀記錄
+function updateCurrentFrameData(targetId, cx, cy) {
+  const target = getAllTargets().find(t => t.id === targetId);
+  if (!target || !target.trajectory || target.trajectory.length === 0) return;
+
+  const curTime = video.currentTime;
+  const fps = 30;
+  const tolerance = (1 / fps) * 0.7;
+
+  let matchedIdx = -1;
+  let minDiff = Infinity;
+
+  for (let i = 0; i < target.trajectory.length; i++) {
+    const diff = Math.abs(parseFloat(target.trajectory[i].time) - curTime);
+    if (diff < minDiff) {
+      minDiff = diff;
+      matchedIdx = i;
+    }
+  }
+
+  if (matchedIdx !== -1 && minDiff <= tolerance) {
+    const tiltAngle = parseFloat(document.getElementById('tiltAngle')?.value) || 0;
+    const calPoints = getCalibrationPoints();
+    const origin = calPoints[0] || { x: 0, y: canvas.height };
+    const pxPerMeter = getPxPerMeter();
+
+    const trans = transformCoordinates(cx, cy, {
+      imageWidth: canvas.width,
+      imageHeight: canvas.height,
+      tiltAngleDeg: tiltAngle,
+      originX: origin.x,
+      originY: origin.y,
+      isAlreadyRectified: true
+    });
+
+    const item = target.trajectory[matchedIdx];
+    item.cx = cx;
+    item.cy = cy;
+    item.x_px = cx.toFixed(1);
+    item.y_px = cy.toFixed(1);
+    item.x_m = pxPerMeter ? trans.x_m.toFixed(4) : (cx / (pxPerMeter || 1)).toFixed(4);
+    item.y_m = pxPerMeter ? trans.y_m.toFixed(4) : ((canvas.height - cy) / (pxPerMeter || 1)).toFixed(4);
+    item.score = "1.000 (手動修正)";
+
+    updateTrackingUI(item, target.trajectory);
+    renderChart(target.trajectory);
+    document.getElementById('status').innerText = `目標 [${target.name}] 第 ${item.frame} 幀已被手動更新！`;
+  }
 }
 
 function updateTrackingUI(frameData, allData) {
   if (!frameData) return;
-
   const pointCount = document.getElementById('pointCount');
   if (pointCount && Array.isArray(allData)) {
     pointCount.innerText = allData.length.toString();
@@ -715,14 +776,85 @@ function updateTrackingUI(frameData, allData) {
     });
 
     const posDisplay = document.getElementById('posDisplay');
+    const active = getActiveTarget();
+    const prefix = active ? `[${active.name}] ` : '';
     if (posDisplay && corrected && !isNaN(corrected.x_m) && !isNaN(corrected.y_m)) {
-      posDisplay.innerText = `X: ${corrected.x_m.toFixed(3)} m | Y: ${corrected.y_m.toFixed(3)} m`;
-    } else if (posDisplay) {
-      posDisplay.innerText = `X: ${frameData.cx.toFixed(1)} px | Y: ${frameData.cy.toFixed(1)} px`;
+      posDisplay.innerText = `${prefix}X: ${corrected.x_m.toFixed(3)} m | Y: ${corrected.y_m.toFixed(3)} m`;
     }
   } catch (e) {
     console.warn('座標轉換警告:', e);
   }
+}
+
+// 導出所有追蹤點的完整遙測資料表
+function handleExport() {
+  const targets = getAllTargets();
+  if (targets.length === 0 || !targets[0].trajectory.length) return;
+
+  const tiltAngle = parseFloat(document.getElementById('tiltAngle')?.value) || 0;
+  const calPoints = getCalibrationPoints();
+  const origin = calPoints[0] || { x: 0, y: canvas.height };
+  const hasScale = getPxPerMeter() > 0;
+
+  // 以第 1 個目標點的總影格序列為基準進行寬格式合併
+  const baseTrajectory = targets[0].trajectory;
+  const exportRows = [];
+
+  for (let i = 0; i < baseTrajectory.length; i++) {
+    const row = {
+      frame: baseTrajectory[i].frame,
+      time: baseTrajectory[i].time
+    };
+
+    targets.forEach((t) => {
+      const pt = t.trajectory[i] || {};
+      const cx = pt.cx !== undefined ? pt.cx : 0;
+      const cy = pt.cy !== undefined ? pt.cy : 0;
+
+      const corrected = transformCoordinates(cx, cy, {
+        imageWidth: canvas.width,
+        imageHeight: canvas.height,
+        tiltAngleDeg: tiltAngle,
+        originX: origin.x,
+        originY: origin.y,
+        isAlreadyRectified: true
+      });
+
+      row[`${t.name}_X_m`] = hasScale ? corrected.x_m.toFixed(4) : corrected.x.toFixed(1);
+      row[`${t.name}_Y_m`] = hasScale ? corrected.y_m.toFixed(4) : corrected.y.toFixed(1);
+      row[`${t.name}_X_px`] = pt.x_px || '0.0';
+      row[`${t.name}_Y_px`] = pt.y_px || '0.0';
+      row[`${t.name}_Score`] = pt.score || '0.000';
+    });
+
+    exportRows.push(row);
+  }
+
+  exportCSV(exportRows);
+}
+
+function handleCalibrationClick(x, y) {
+  const realLen = parseFloat(document.getElementById('scaleLength').value) || 1.0;
+  const result = addCalibrationPoint(x, y, realLen);
+  drawDot(x, y, '#ef4444');
+
+  if (result.completed) {
+    document.getElementById('scaleDisplay').innerText = `${result.pxPerMeter.toFixed(2)} px/m`;
+    document.getElementById('status').innerText = '定標完成！請點選「Step 2」指定追蹤目標';
+    mode = 'idle';
+  }
+}
+
+function drawDot(x, y, color) {
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
 }
 
 function handle4PointClick(x, y) {
@@ -752,7 +884,7 @@ function handle4PointClick(x, y) {
       currentHomography = result.homography;
       setHomographyMatrix(currentHomography);
       renderCurrentFrame(true);
-      document.getElementById('status').innerText = '視角轉正成功！請點擊「定標」按鈕進行公尺標定。';
+      document.getElementById('status').innerText = '視角轉正成功！請點擊「尺規定標」標定公尺長度。';
     } catch (err) {
       console.error(err);
       alert('校正計算失敗，請確保 4 個角點形成合理的凸四邊形！');
@@ -766,7 +898,6 @@ function handle4PointClick(x, y) {
 function handleK1LineClick(x, y) {
   k1LinePoints.push({ x, y });
   drawDot(x, y, '#38bdf8');
-
   const count = k1LinePoints.length;
   document.getElementById('status').innerText = `請點擊畫面上同一直線邊緣的 ${K1_TARGET_POINTS} 個點 (${count}/${K1_TARGET_POINTS})`;
 
@@ -778,40 +909,11 @@ function handleK1LineClick(x, y) {
       k1Input.value = calculatedK1;
       k1ValueDisplay.innerText = calculatedK1.toFixed(3);
     }
-
     renderCurrentFrame();
     document.getElementById('status').innerText = `k1 畸變計算完成：${calculatedK1.toFixed(4)}！`;
     mode = 'idle';
     k1LinePoints = [];
   }
-}
-
-function handleExport() {
-  if (!trackingData.length) return;
-
-  const tiltAngle = parseFloat(document.getElementById('tiltAngle')?.value) || 0;
-  const calPoints = getCalibrationPoints();
-  const origin = calPoints[0] || { x: 0, y: canvas.height };
-  const hasScale = getPxPerMeter() > 0;
-
-  const exportData = trackingData.map(item => {
-    const corrected = transformCoordinates(item.cx, item.cy, {
-      imageWidth: canvas.width,
-      imageHeight: canvas.height,
-      tiltAngleDeg: tiltAngle,
-      originX: origin.x,
-      originY: origin.y,
-      isAlreadyRectified: true
-    });
-
-    return {
-      ...item,
-      x_m: hasScale ? corrected.x_m.toFixed(4) : corrected.x.toFixed(1),
-      y_m: hasScale ? corrected.y_m.toFixed(4) : corrected.y.toFixed(1)
-    };
-  });
-
-  exportCSV(exportData);
 }
 
 function drawGrid(ctx, width, height, baseStep = 50, tiltAngleDeg = 0, origin = { x: width / 2, y: height / 2 }) {
@@ -821,15 +923,13 @@ function drawGrid(ctx, width, height, baseStep = 50, tiltAngleDeg = 0, origin = 
   ctx.rotate(rad);
 
   const maxDim = Math.hypot(width, height) * 2;
-  const step = baseStep;
-
   ctx.strokeStyle = 'rgba(56, 189, 248, 0.25)';
   ctx.lineWidth = 0.8;
   ctx.beginPath();
-  for (let x = -maxDim; x <= maxDim; x += step) {
+  for (let x = -maxDim; x <= maxDim; x += baseStep) {
     ctx.moveTo(x, -maxDim); ctx.lineTo(x, maxDim);
   }
-  for (let y = -maxDim; y <= maxDim; y += step) {
+  for (let y = -maxDim; y <= maxDim; y += baseStep) {
     ctx.moveTo(-maxDim, y); ctx.lineTo(maxDim, y);
   }
   ctx.stroke();
@@ -847,80 +947,55 @@ function drawGrid(ctx, width, height, baseStep = 50, tiltAngleDeg = 0, origin = 
   ctx.restore();
 }
 
-// 根據當前影片時間，尋找歷史追蹤點並將選取框移至該狀態
-function syncGizmoToCurrentTime() {
-  if (!trackingData || trackingData.length === 0) return;
-  
-  const curTime = video.currentTime;
-  const fps = 30;
-  const tolerance = (1 / fps) * 0.7; // 容許誤差約半幀多一點
+// 動態更新圖表切換按鈕清單 (當新增或刪除目標點時調用)
+export function updateChartFilterUI() {
+  const container = document.getElementById('chartFilterPills');
+  if (!container) return;
 
-  // 尋找時間最接近當前時間的點
-  let closestPoint = null;
-  let minDiff = Infinity;
+  const targets = getAllTargets();
 
-  for (const pt of trackingData) {
-    const diff = Math.abs(parseFloat(pt.time) - curTime);
-    if (diff < minDiff) {
-      minDiff = diff;
-      closestPoint = pt;
-    }
+  // 若當前選定的目標已被刪除，重設回 'all'
+  if (currentChartFilter !== 'all' && !targets.some(t => t.id === currentChartFilter)) {
+    currentChartFilter = 'all';
   }
 
-  // 如果找到足夠接近的歷史影格
-  if (closestPoint && minDiff <= tolerance) {
-    setTargetCenter(closestPoint.cx, closestPoint.cy);
-    updateTrackingUI(closestPoint, trackingData);
-    document.getElementById('status').innerText = `已載入第 ${closestPoint.frame} 幀記錄 (時間: ${closestPoint.time}s)，可拖曳微調`;
-  }
-}
+  let html = `
+    <button class="pill-btn ${currentChartFilter === 'all' ? 'active' : ''}" data-target-id="all">
+      <span class="pill-badge-all">ALL</span> 全部疊加對比
+    </button>
+  `;
 
-// 當使用者手動調整了選取框位置，覆寫/更新該影格在 trackingData 中的數據
-function updateCurrentFrameData(cx, cy) {
-  if (!trackingData || trackingData.length === 0) return;
+  targets.forEach(t => {
+    const isActive = (currentChartFilter === t.id);
+    html += `
+      <button class="pill-btn ${isActive ? 'active' : ''}" data-target-id="${t.id}">
+        <span class="chip-color" style="background: ${t.color}"></span>
+        ${t.name}
+      </button>
+    `;
+  });
 
-  const curTime = video.currentTime;
-  const fps = 30;
-  const tolerance = (1 / fps) * 0.7;
+  container.innerHTML = html;
 
-  let matchedIdx = -1;
-  let minDiff = Infinity;
+  // 綁定點擊切換事件
+  container.querySelectorAll('.pill-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      currentChartFilter = btn.getAttribute('data-target-id');
+      updateChartFilterUI();
+      renderChart(getAllTargets(), currentChartFilter);
 
-  for (let i = 0; i < trackingData.length; i++) {
-    const diff = Math.abs(parseFloat(trackingData[i].time) - curTime);
-    if (diff < minDiff) {
-      minDiff = diff;
-      matchedIdx = i;
-    }
-  }
-
-  // 如果這幀是已經追蹤過的，覆寫它的資料
-  if (matchedIdx !== -1 && minDiff <= tolerance) {
-    const tiltAngle = parseFloat(document.getElementById('tiltAngle')?.value) || 0;
-    const calPoints = getCalibrationPoints();
-    const origin = calPoints[0] || { x: 0, y: canvas.height };
-    const pxPerMeter = getPxPerMeter();
-
-    const trans = transformCoordinates(cx, cy, {
-      imageWidth: canvas.width,
-      imageHeight: canvas.height,
-      tiltAngleDeg: tiltAngle,
-      originX: origin.x,
-      originY: origin.y,
-      isAlreadyRectified: true
+      // 同步通道指示字樣
+      const labelX = document.getElementById('chartLabelX');
+      const labelY = document.getElementById('chartLabelY');
+      if (currentChartFilter === 'all') {
+        if (labelX) labelX.innerText = 'CH-1: X (全部疊加)';
+        if (labelY) labelY.innerText = 'CH-2: Y (全部疊加)';
+      } else {
+        const found = targets.find(t => t.id === currentChartFilter);
+        const name = found ? found.name : '';
+        if (labelX) labelX.innerText = `CH-1: X (${name})`;
+        if (labelY) labelY.innerText = `CH-2: Y (${name})`;
+      }
     });
-
-    const targetItem = trackingData[matchedIdx];
-    targetItem.cx = cx;
-    targetItem.cy = cy;
-    targetItem.x_px = cx.toFixed(1);
-    targetItem.y_px = cy.toFixed(1);
-    targetItem.x_m = pxPerMeter ? trans.x_m.toFixed(4) : (cx / (pxPerMeter || 1)).toFixed(4);
-    targetItem.y_m = pxPerMeter ? trans.y_m.toFixed(4) : ((canvas.height - cy) / (pxPerMeter || 1)).toFixed(4);
-    targetItem.score = "1.000 (手動微調)";
-
-    updateTrackingUI(targetItem, trackingData);
-    renderChart(trackingData);
-    document.getElementById('status').innerText = `第 ${targetItem.frame} 幀位置已手動校正覆寫！`;
-  }
+  });
 }

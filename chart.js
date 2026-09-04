@@ -1,4 +1,4 @@
-// chart.js：負責 X/Y 位移-時間折線圖的繪製 (工程示波器風格)
+// chart.js：多目標運動學示波器繪製引擎 (支援多軌同圖疊加與單一目標過濾)
 
 let canvasX = null, ctxX = null;
 let canvasY = null, ctxY = null;
@@ -6,9 +6,6 @@ let canvasY = null, ctxY = null;
 // 每個資料點在圖表上的最小水平像素距離（支援長時序橫向捲動）
 const PX_PER_POINT = 14;
 
-/**
- * 初始化圖表 Canvas 元素
- */
 export function initChart(elX, elY) {
   canvasX = elX;
   ctxX = canvasX.getContext('2d');
@@ -17,17 +14,11 @@ export function initChart(elX, elY) {
   resizeChart();
 }
 
-/**
- * 響應視窗大小變更
- */
 export function resizeChart() {
   if (!canvasX || !canvasY) return;
   clearChart();
 }
 
-/**
- * 清除並重繪初始空軸線
- */
 export function clearChart() {
   const charts = [
     { canvas: canvasX, ctx: ctxX, title: 'CH-1: X-DISPLACEMENT (m)', color: '#38bdf8' },
@@ -48,10 +39,10 @@ export function clearChart() {
 }
 
 /**
- * 繪製示波器背景底網格與刻度框
+ * 繪製示波器背景網格、軸刻度與多目標色票圖例 (Legends)
  */
-function drawFrameBackground(ctx, w, h, title, color, minV = null, maxV = null, maxT = null) {
-  const padLeft = 45, padRight = 25, padTop = 22, padBottom = 22;
+function drawFrameBackground(ctx, w, h, title, defaultColor, minV = null, maxV = null, maxT = null, activeSeries = []) {
+  const padLeft = 45, padRight = 25, padTop = 24, padBottom = 22;
   const plotW = Math.max(10, w - padLeft - padRight);
   const plotH = Math.max(10, h - padTop - padBottom);
 
@@ -59,17 +50,17 @@ function drawFrameBackground(ctx, w, h, title, color, minV = null, maxV = null, 
   ctx.fillStyle = '#090d12';
   ctx.fillRect(0, 0, w, h);
 
-  // 2. 示波器輕量背景網格 (Grid)
+  // 2. 示波器輕量背景網格
   ctx.strokeStyle = '#18202c';
   ctx.lineWidth = 1;
   ctx.beginPath();
-  const vSteps = 4; // 垂直 4 格
+  const vSteps = 4;
   for (let i = 0; i <= vSteps; i++) {
     const y = padTop + (plotH / vSteps) * i;
     ctx.moveTo(padLeft, y);
     ctx.lineTo(padLeft + plotW, y);
   }
-  const hSteps = Math.max(2, Math.floor(plotW / 80)); // 每 80px 一格時間線
+  const hSteps = Math.max(2, Math.floor(plotW / 80));
   for (let i = 0; i <= hSteps; i++) {
     const x = padLeft + (plotW / hSteps) * i;
     ctx.moveTo(x, padTop);
@@ -81,12 +72,38 @@ function drawFrameBackground(ctx, w, h, title, color, minV = null, maxV = null, 
   ctx.strokeStyle = '#272f38';
   ctx.strokeRect(padLeft, padTop, plotW, plotH);
 
-  // 4. 左上角通道標題
-  ctx.fillStyle = color;
-  ctx.font = '10px "JetBrains Mono", Consolas, monospace';
-  ctx.fillText(title, padLeft + 6, padTop + 14);
+  // 4. 通道標題
+  ctx.fillStyle = defaultColor;
+  ctx.font = 'bold 10px "JetBrains Mono", Consolas, monospace';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(title, padLeft + 6, padTop - 12);
 
-  // 5. 繪製刻度數值 (數值範圍有效時)
+  // 4-1. 右上方繪製多目標色票圖例 (Legend)
+  if (activeSeries && activeSeries.length > 0) {
+    let legendX = padLeft + plotW;
+    ctx.font = '9px "JetBrains Mono", Consolas, monospace';
+    ctx.textBaseline = 'middle';
+
+    for (let i = activeSeries.length - 1; i >= 0; i--) {
+      const s = activeSeries[i];
+      const textWidth = ctx.measureText(s.name).width;
+      legendX -= (textWidth + 16);
+
+      // 色點
+      ctx.beginPath();
+      ctx.arc(legendX + 4, padTop - 12, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = s.color;
+      ctx.fill();
+
+      // 文字
+      ctx.fillStyle = '#cbd5e1';
+      ctx.textAlign = 'left';
+      ctx.fillText(s.name, legendX + 11, padTop - 12);
+    }
+  }
+
+  // 5. 繪製數值刻度 (Y 軸)
   ctx.fillStyle = '#6e7681';
   ctx.font = '9px "JetBrains Mono", Consolas, monospace';
   ctx.textAlign = 'right';
@@ -98,7 +115,7 @@ function drawFrameBackground(ctx, w, h, title, color, minV = null, maxV = null, 
     ctx.fillText(minV.toFixed(2), padLeft - 6, padTop + plotH);
   }
 
-  // 時間軸標記
+  // 時間軸標記 (X 軸)
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   ctx.fillText('0.0s', padLeft, padTop + plotH + 5);
@@ -122,23 +139,74 @@ function getMinMax(arr) {
 }
 
 /**
- * 渲染追蹤資料
+ * 渲染多目標追蹤資料
+ * @param {Array} targetsData - 包含所有目標物件的陣列 [ { id, name, color, trajectory } ] 或舊版單點軌跡
+ * @param {string} filterTargetId - 篩選顯示模式: 'all' (全部疊加) 或 特定目標的 id
  */
-export function renderChart(trackingData) {
-  if (!ctxX || !ctxY || !trackingData || trackingData.length === 0) return;
+export function renderChart(targetsData, filterTargetId = 'all') {
+  if (!ctxX || !ctxY || !targetsData) return;
 
-  const times = trackingData.map(d => parseFloat(d.time));
-  const xVals = trackingData.map(d => parseFloat(d.x_m));
-  const yVals = trackingData.map(d => parseFloat(d.y_m));
+  // 兼顧舊版單一 target trajectory 陣列傳入
+  let seriesList = [];
+  if (Array.isArray(targetsData) && targetsData.length > 0) {
+    if (targetsData[0].trajectory !== undefined) {
+      // 多目標物件結構
+      if (filterTargetId === 'all') {
+        seriesList = targetsData.filter(t => t.trajectory && t.trajectory.length > 0);
+      } else {
+        seriesList = targetsData.filter(t => t.id === filterTargetId && t.trajectory && t.trajectory.length > 0);
+      }
+    } else if (targetsData[0].time !== undefined) {
+      // 傳統單點 flat trajectory
+      seriesList = [{
+        id: 'default',
+        name: 'P1',
+        color: '#38bdf8',
+        trajectory: targetsData
+      }];
+    }
+  }
 
-  const padLeft = 45, padRight = 25, padTop = 22, padBottom = 22;
+  if (seriesList.length === 0) {
+    clearChart();
+    return;
+  }
 
-  const renderSingleGraph = (canvas, ctx, values, title, color) => {
+  // 1. 計算所有顯示系列中的全域邊界（讓同圖內的曲線在同一物理坐標尺規下對齊）
+  let globalMaxT = 0.5;
+  let maxPointsCount = 0;
+  let globalMinX = Infinity, globalMaxX = -Infinity;
+  let globalMinY = Infinity, globalMaxY = -Infinity;
+
+  seriesList.forEach(s => {
+    const traj = s.trajectory;
+    if (traj.length > maxPointsCount) maxPointsCount = traj.length;
+
+    const times = traj.map(d => parseFloat(d.time));
+    const xVals = traj.map(d => parseFloat(d.x_m));
+    const yVals = traj.map(d => parseFloat(d.y_m));
+
+    const tMM = getMinMax(times);
+    if (tMM.max > globalMaxT) globalMaxT = tMM.max;
+
+    const xMM = getMinMax(xVals);
+    if (xMM.min < globalMinX) globalMinX = xMM.min;
+    if (xMM.max > globalMaxX) globalMaxX = xMM.max;
+
+    const yMM = getMinMax(yVals);
+    if (yMM.min < globalMinY) globalMinY = yMM.min;
+    if (yMM.max > globalMaxY) globalMaxY = yMM.max;
+  });
+
+  const padLeft = 45, padRight = 25, padTop = 24, padBottom = 22;
+
+  // 2. 單一軸圖表渲染閉包函式
+  const renderMultiSeriesGraph = (canvas, ctx, axisKey, title, defaultColor, valMin, valMax) => {
     const parent = canvas.parentElement;
     const minW = parent.clientWidth || 300;
     
-    // 依據資料量動態拓展寬度 (保留示波器時間滾動能力)
-    const targetW = Math.max(minW, padLeft + padRight + trackingData.length * PX_PER_POINT);
+    // 依長時序長度擴展寬度 (支援橫向捲動)
+    const targetW = Math.max(minW, padLeft + padRight + maxPointsCount * PX_PER_POINT);
     const targetH = parent.clientHeight || 180;
 
     if (canvas.width !== targetW || canvas.height !== targetH) {
@@ -149,65 +217,68 @@ export function renderChart(trackingData) {
     const plotW = canvas.width - padLeft - padRight;
     const plotH = canvas.height - padTop - padBottom;
 
-    const minT = 0;
-    const { max: maxT_raw } = getMinMax(times);
-    const maxT = Math.max(maxT_raw || 0, 0.5);
-
-    let { min: minV, max: maxV } = getMinMax(values);
-    if (minV === maxV) { minV -= 0.5; maxV += 0.5; }
+    let minV = valMin;
+    let maxV = valMax;
+    if (minV === maxV || !isFinite(minV) || !isFinite(maxV)) { minV = -1; maxV = 1; }
     const margin = (maxV - minV) * 0.12 || 0.05;
     minV -= margin;
     maxV += margin;
 
-    // 繪製背景與網格刻度
-    drawFrameBackground(ctx, canvas.width, canvas.height, title, color, minV, maxV, maxT);
+    // 繪製背景、標題刻度與色票
+    drawFrameBackground(ctx, canvas.width, canvas.height, title, defaultColor, minV, maxV, globalMaxT, seriesList);
 
-    // 精確座標映射 (完全鎖在 plotW 與 plotH 邊界內)
-    const rangeT = maxT - minT || 1;
+    const rangeT = globalMaxT || 1;
     const rangeV = maxV - minV || 1;
-    const mapX = (t) => padLeft + ((t - minT) / rangeT) * plotW;
+    const mapX = (t) => padLeft + (t / rangeT) * plotW;
     const mapY = (val) => padTop + plotH - ((val - minV) / rangeV) * plotH;
 
-    // 1. 折線繪製
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    for (let i = 0; i < times.length; i++) {
-      const px = mapX(times[i]);
-      const py = mapY(values[i]);
-      if (i === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
-    }
-    ctx.stroke();
+    // 逐一繪製每個目標的軌跡曲線
+    seriesList.forEach(series => {
+      const traj = series.trajectory;
+      if (traj.length === 0) return;
 
-    // 2. 數據點繪製 (超過 300 點降採樣，維護流暢度)
-    ctx.fillStyle = color;
-    const step = times.length > 300 ? Math.ceil(times.length / 300) : 1;
-    for (let i = 0; i < times.length; i += step) {
-      const px = mapX(times[i]);
-      const py = mapY(values[i]);
+      const curveColor = (filterTargetId === 'all') ? series.color : defaultColor;
+
+      // 折線
+      ctx.strokeStyle = curveColor;
+      ctx.lineWidth = 1.6;
       ctx.beginPath();
-      ctx.arc(px, py, 2, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    // 必繪製最後一個最新錨點（空心外光暈）
-    if (times.length > 0) {
-      const lastIdx = times.length - 1;
-      const px = mapX(times[lastIdx]);
-      const py = mapY(values[lastIdx]);
+      for (let i = 0; i < traj.length; i++) {
+        const px = mapX(parseFloat(traj[i].time));
+        const py = mapY(parseFloat(traj[i][axisKey]));
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+
+      // 數據點 (降採樣保證 60FPS)
+      ctx.fillStyle = curveColor;
+      const step = traj.length > 250 ? Math.ceil(traj.length / 250) : 1;
+      for (let i = 0; i < traj.length; i += step) {
+        const px = mapX(parseFloat(traj[i].time));
+        const py = mapY(parseFloat(traj[i][axisKey]));
+        ctx.beginPath();
+        ctx.arc(px, py, 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // 最新時間點外光暈實心錨點
+      const last = traj[traj.length - 1];
+      const lx = mapX(parseFloat(last.time));
+      const ly = mapY(parseFloat(last[axisKey]));
       ctx.beginPath();
-      ctx.arc(px, py, 4, 0, Math.PI * 2);
+      ctx.arc(lx, ly, 4, 0, Math.PI * 2);
       ctx.fillStyle = '#ffffff';
       ctx.fill();
-      ctx.strokeStyle = color;
+      ctx.strokeStyle = curveColor;
       ctx.lineWidth = 1.5;
       ctx.stroke();
-    }
+    });
 
-    // 自動滾動至最右側最新時間點
+    // 自動捲動到最右端最新時間點
     parent.scrollLeft = parent.scrollWidth;
   };
 
-  renderSingleGraph(canvasX, ctxX, xVals, 'CH-1: X-DISPLACEMENT (m)', '#38bdf8');
-  renderSingleGraph(canvasY, ctxY, yVals, 'CH-2: Y-DISPLACEMENT (m)', '#f87171');
+  renderMultiSeriesGraph(canvasX, ctxX, 'x_m', 'CH-1: X-DISPLACEMENT (m)', '#38bdf8', globalMinX, globalMaxX);
+  renderMultiSeriesGraph(canvasY, ctxY, 'y_m', 'CH-2: Y-DISPLACEMENT (m)', '#f87171', globalMinY, globalMaxY);
 }
