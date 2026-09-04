@@ -4,22 +4,19 @@
 let templatePatch = null; // 目標模板像素資料
 let targetBBox = null;
 let templateSize = 32;    // 模板尺寸 (px)，可依物體大小調整
-let roiBox = null;
 
 export function resetTrackState() {
   templatePatch = null;
   targetBBox = null;
-  roiBox = null;
 }
 
 export function setROI(x, y, width, height) {
-  roiBox = {
+  return {
     x: Math.round(x),
     y: Math.round(y),
     width: Math.round(width),
     height: Math.round(height)
   };
-  return roiBox;
 }
 
 // 選取目標：擷取整塊區域作為模板並預先計算均值與標準差

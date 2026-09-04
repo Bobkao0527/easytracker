@@ -142,7 +142,7 @@ window.onload = () => {
       k1ValueDisplay.innerText = parseFloat(e.target.value).toFixed(3);
       renderCurrentFrame();
       if (trackingData.length > 0) {
-        updateTrackingUI(trackingData[trackingData.length - 1], trackingData, true);
+        updateTrackingUI(trackingData[trackingData.length - 1], trackingData);
       }
     });
   }
@@ -212,7 +212,7 @@ function handleTrackingFrameUpdate(frameData, allData) {
   // UI 約 30 FPS 更新
   if (now - lastUIUpdateTime >= UI_UPDATE_INTERVAL) {
     lastUIUpdateTime = now;
-    updateTrackingUI(frameData, allData, false);
+    updateTrackingUI(frameData, allData);
   }
 
   // Chart 約 10 FPS 更新
@@ -285,8 +285,6 @@ function handleVideoUpload(e) {
     if (btnROI) btnROI.disabled = false;
 
     document.getElementById('btnTrack').disabled = false;
-    document.getElementById('btnProcess').disabled = true;
-    document.getElementById('btnExport').disabled = true;
     document.getElementById('btnProcess').disabled = true;
     document.getElementById('btnExport').disabled = true;
 
@@ -717,7 +715,7 @@ async function startAutoTrack() {
 
     if (trackingData.length) {
       const last = trackingData[trackingData.length - 1];
-      updateTrackingUI(last, trackingData, true);
+      updateTrackingUI(last, trackingData);
       renderChart(trackingData);
 
       // 計算整段追蹤的平均處理幀率
@@ -748,40 +746,10 @@ async function startAutoTrack() {
 }
 
 // ============================================================
-// 高速追蹤 Frame Update
-//
-// track.js 可以高頻率回傳。
-// 這裡負責限制 UI 更新頻率。
-// ============================================================
-
-function handleTrackingFrameUpdate(frameData, allData) {
-  if (!frameData || !Array.isArray(allData)) return;
-
-  const now = performance.now();
-
-  // UI 約 30 FPS
-  if (now - lastUIUpdateTime >= UI_UPDATE_INTERVAL) {
-    lastUIUpdateTime = now;
-
-    updateTrackingUI(
-      frameData,
-      allData,
-      false
-    );
-  }
-
-  // Chart 約 10 FPS
-  if (now - lastChartUpdateTime >= CHART_UPDATE_INTERVAL) {
-    lastChartUpdateTime = now;
-    renderChart(allData);
-  }
-}
-
-// ============================================================
 // 更新追蹤 UI
 // ============================================================
 
-function updateTrackingUI(frameData, allData, force = false) {
+function updateTrackingUI(frameData, allData) {
   if (!frameData) return;
 
   // 1. 補上已捕捉影幀數量更新
@@ -821,7 +789,7 @@ function updateTrackingUI(frameData, allData, force = false) {
 function refreshCurrentPosDisplay() {
   if (trackingData && trackingData.length > 0) {
     const lastFrame = trackingData[trackingData.length - 1];
-    updateTrackingUI(lastFrame, trackingData, true);
+    updateTrackingUI(lastFrame, trackingData);
   }
 }
 
