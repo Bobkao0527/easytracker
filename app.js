@@ -1,39 +1,12 @@
 // app.js
 // 主入口模組：協調定標、追蹤、圖表、匯出各子模組
 
-import {
-  resetCalibration,
-  addCalibrationPoint,
-  getPxPerMeter,
-  getCalibrationPoints
-} from './standard.js';
-
-import {
-  resetTrackState,
-  selectTarget,
-  getTargetBBox,
-  getTargetColor,
-  setROI,
-  getROI,
-  estimateMemoryUsage,
-  runAutoTrackParallel
-} from './track.js';
-
-import {
-  initChart,
-  clearChart,
-  renderChart,
-  resizeChart
-} from './chart.js';
-
+import {resetCalibration, addCalibrationPoint, getPxPerMeter, getCalibrationPoints, transformCoordinates, autoCalculateK1, autoCalculatePerspectiveAndK1} from './standard.js';
+import {resetTrackState, selectTarget, getTargetBBox, getTargetColor, setROI, runAutoTrack, drawTrackingGizmo} from './track.js';
+import {initChart, clearChart, renderChart, resizeChart} from './chart.js';
 import { exportCSV } from './export.js';
-
-import {
-  initZoomPan,
-  setZoom,
-  resetZoomPan,
-  getZoomLevel
-} from './zoomPan.js';
+import {initZoomPan, setZoom, resetZoomPan, getZoomLevel} from './zoomPan.js';
+import { initDistortionRenderer, renderDistortedVideo, setHomographyMatrix } from './distortion.js';
 
 // ============================================================
 // 狀態變數
@@ -51,6 +24,13 @@ let isTracking = false;
 let renderLoopId = null;
 let currentVideoUrl = null;
 let roiStartPoint = null;
+
+let k1LinePoints = [];
+const K1_TARGET_POINTS = 8; // 設定目標點數 (8點)
+
+let currentLineIndex = 0; // 0, 1 (水平線) | 2, 3 (鉛直線)
+let multiLinesPoints = [[], [], [], []]; // 儲存 4 條線的點
+let currentHomography = [1,0,0, 0,1,0, 0,0,1];
 
 // ============================================================
 // 高速追蹤 UI 節流狀態
@@ -98,6 +78,20 @@ window.onload = () => {
         '請點擊影片上的兩點設定真實長度';
     });
 
+  // 自動 k1 計算按鈕事件
+  document.getElementById('btnAutoK1')?.addEventListener('click', () => {
+    mode = 'selectK1Line';
+    k1LinePoints = [];
+    document.getElementById('status').innerText = `請點擊畫面上同一直線邊緣的 ${K1_TARGET_POINTS} 個點 (0/${K1_TARGET_POINTS})`;
+  });
+
+  document.getElementById('btnAutoPerspectiveK1')?.addEventListener('click', () => {
+    mode = 'selectPerspectiveLines';
+    currentLineIndex = 0;
+    multiLinesPoints = [[], [], [], []];
+    updatePerspectiveStatusUI();
+  });
+
   // ROI
   document
     .getElementById('btnROI')
@@ -139,6 +133,27 @@ window.onload = () => {
       setZoom(getZoomLevel() + 0.25);
     });
 
+  const k1Input = document.getElementById('k1Distortion');
+  const k1ValueDisplay = document.getElementById('k1Value');
+  const tiltInput = document.getElementById('tiltAngle');
+
+  if (k1Input && k1ValueDisplay) {
+    k1Input.addEventListener('input', (e) => {
+      k1ValueDisplay.innerText = parseFloat(e.target.value).toFixed(3);
+      renderCurrentFrame();
+      if (trackingData.length > 0) {
+        updateTrackingUI(trackingData[trackingData.length - 1], trackingData, true);
+      }
+    });
+  }
+
+  if (tiltInput) {
+    tiltInput.addEventListener('input', () => {
+      renderCurrentFrame();
+      refreshCurrentPosDisplay(); // 調整傾角時同步更新數據
+    });
+  }
+
   document
     .getElementById('btnZoomOut')
     ?.addEventListener('click', () => {
@@ -156,6 +171,56 @@ window.onload = () => {
     resizeChart();
   });
 };
+
+function updatePerspectiveStatusUI() {
+  // 修正：邊界保護
+  if (currentLineIndex >= 4 || !multiLinesPoints[currentLineIndex]) return;
+
+  const lineTypes = ['第 1 條水平線', '第 2 條水平線', '第 1 條鉛直線', '第 2 條鉛直線'];
+  const currentCount = multiLinesPoints[currentLineIndex].length;
+  document.getElementById('status').innerText = 
+    `請點選【${lineTypes[currentLineIndex]}】上的 6 個點 (${currentCount}/6)`;
+}
+
+// ============================================================
+// 高速追蹤 Frame Update (含即時 FPS 計算)
+// ============================================================
+
+let lastFpsCalcTime = 0;
+let framesSinceLastCalc = 0;
+
+function handleTrackingFrameUpdate(frameData, allData) {
+  if (!frameData || !Array.isArray(allData)) return;
+
+  const now = performance.now();
+  framesSinceLastCalc++;
+
+  // 每約 500ms 計算一次即時處理 FPS，顯示更穩定不跳動
+  if (now - lastFpsCalcTime >= 500) {
+    if (lastFpsCalcTime > 0) {
+      const elapsedSec = (now - lastFpsCalcTime) / 1000;
+      const currentFPS = (framesSinceLastCalc / elapsedSec).toFixed(1);
+      const fpsDisplay = document.getElementById('fpsDisplay');
+      if (fpsDisplay) {
+        fpsDisplay.innerText = `${currentFPS} FPS`;
+      }
+    }
+    lastFpsCalcTime = now;
+    framesSinceLastCalc = 0;
+  }
+
+  // UI 約 30 FPS 更新
+  if (now - lastUIUpdateTime >= UI_UPDATE_INTERVAL) {
+    lastUIUpdateTime = now;
+    updateTrackingUI(frameData, allData, false);
+  }
+
+  // Chart 約 10 FPS 更新
+  if (now - lastChartUpdateTime >= CHART_UPDATE_INTERVAL) {
+    lastChartUpdateTime = now;
+    renderChart(allData);
+  }
+}
 
 // ============================================================
 // 影片載入
@@ -186,8 +251,8 @@ function handleVideoUpload(e) {
     posDisplay.innerText = 'X: - m | Y: - m';
   }
 
-  const memDisplay = document.getElementById('memDisplay');
-  if (memDisplay) memDisplay.innerText = '0 MB';
+  const fpsDisplay = document.getElementById('fpsDisplay');
+  if (fpsDisplay) fpsDisplay.innerText = '- FPS';
 
   clearChart();
 
@@ -212,17 +277,16 @@ function handleVideoUpload(e) {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
 
-    ctx.drawImage(
-      video,
-      0,
-      0,
-      canvas.width,
-      canvas.height
-    );
-
+    initDistortionRenderer(video.videoWidth, video.videoHeight);
+    renderCurrentFrame(true);
     document.getElementById('btnCalibrate').disabled = false;
-    document.getElementById('btnROI').disabled = false;
+    
+    const btnROI = document.getElementById('btnROI');
+    if (btnROI) btnROI.disabled = false;
+
     document.getElementById('btnTrack').disabled = false;
+    document.getElementById('btnProcess').disabled = true;
+    document.getElementById('btnExport').disabled = true;
     document.getElementById('btnProcess').disabled = true;
     document.getElementById('btnExport').disabled = true;
 
@@ -231,6 +295,13 @@ function handleVideoUpload(e) {
 
     startRenderLoop();
   };
+
+  video.onerror = () => {
+    document.getElementById('status').innerText =
+      '影片無法讀取，請確認格式或重新選擇影片';
+  };
+
+  video.load();
 };
 
 // ============================================================
@@ -239,6 +310,74 @@ function handleVideoUpload(e) {
 // 注意：高速追蹤開始後會被停止。
 // ============================================================
 
+function drawGrid(ctx, width, height, baseStep = 50, tiltAngleDeg = 0, origin = { x: width / 2, y: height / 2 }) {
+  ctx.save();
+
+  // 1. 平移至座標系原點，並依傾角角度進行旋轉
+  ctx.translate(origin.x, origin.y);
+  const rad = (tiltAngleDeg * Math.PI) / 180;
+  ctx.rotate(rad);
+
+  // 2. 計算涵蓋全畫布的最大對角半徑，確保旋轉後網格不會露白
+  const maxDim = Math.hypot(width, height) * 2;
+
+  // 3. 修正：採用固定 Canvas 圖片空間間距 (50px)，貼合影像座標，縮放時由 CSS Transform 無縫處理
+  const step = baseStep;
+
+  // 繪製半透明天藍色背景網格線
+  ctx.strokeStyle = 'rgba(56, 189, 248, 0.35)';
+  ctx.lineWidth = 1;
+
+  ctx.beginPath();
+  for (let x = -maxDim; x <= maxDim; x += step) {
+    ctx.moveTo(x, -maxDim);
+    ctx.lineTo(x, maxDim);
+  }
+  for (let y = -maxDim; y <= maxDim; y += step) {
+    ctx.moveTo(-maxDim, y);
+    ctx.lineTo(maxDim, y);
+  }
+  ctx.stroke();
+
+  // 4. 繪製傾斜後的座標主軸 (X軸: 紅色 | Y軸: 綠色)
+  ctx.lineWidth = 2;
+
+  // X 軸 (紅色)
+  ctx.strokeStyle = 'rgba(239, 68, 68, 0.85)';
+  ctx.beginPath();
+  ctx.moveTo(-maxDim, 0);
+  ctx.lineTo(maxDim, 0);
+  ctx.stroke();
+
+  // Y 軸 (綠色)
+  ctx.strokeStyle = 'rgba(34, 197, 94, 0.85)';
+  ctx.beginPath();
+  ctx.moveTo(0, -maxDim);
+  ctx.lineTo(0, maxDim);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function renderCurrentFrame(withGrid = true) {
+  if (!video) return;
+  const k1 = parseFloat(document.getElementById('k1Distortion')?.value) || 0;
+  const tiltAngle = parseFloat(document.getElementById('tiltAngle')?.value) || 0;
+  const calPoints = getCalibrationPoints();
+  const origin = calPoints[0] || { x: canvas.width / 2, y: canvas.height / 2 };
+
+  // 1. 透過 WebGL 渲染變形校正後的影格
+  const renderedWithWebGL = renderDistortedVideo(video, ctx, k1);
+  if (!renderedWithWebGL && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  }
+
+  // 2. 依需求疊加網格
+  if (withGrid) {
+    drawGrid(ctx, canvas.width, canvas.height, 50, tiltAngle, origin);
+  }
+}
+
 function startRenderLoop() {
   if (renderLoopId !== null) {
     cancelAnimationFrame(renderLoopId);
@@ -246,13 +385,8 @@ function startRenderLoop() {
 
   function renderLoop() {
     if (!isTracking && !video.paused && !video.ended) {
-      ctx.drawImage(
-        video,
-        0,
-        0,
-        canvas.width,
-        canvas.height
-      );
+      // 👇 替換原先的 ctx.drawImage，改由 WebGL 渲染畫面扭曲
+      renderCurrentFrame();
     }
 
     renderLoopId = requestAnimationFrame(renderLoop);
@@ -273,20 +407,65 @@ function handleCanvasClick(e) {
   const x = (e.clientX - rect.left) * scaleX;
   const y = (e.clientY - rect.top) * scaleY;
 
-  if (
-    x < 0 ||
-    x > canvas.width ||
-    y < 0 ||
-    y > canvas.height
-  ) {
-    return;
-  }
+  if (x < 0 || x > canvas.width || y < 0 || y > canvas.height) return;
 
   if (mode === 'calibrate') {
     handleCalibrationClick(x, y);
   } else if (mode === 'selectTarget') {
     handleTargetSelection(x, y);
+  } else if (mode === 'selectPerspectiveLines') {
+    handlePerspectiveLineClick(x, y);
+  } else if (mode === 'selectK1Line') {
+    handleK1LineClick(x, y);
   }
+}
+
+function handlePerspectiveLineClick(x, y) {
+  // 修正：索引超出 4 條線時直接 return
+  if (currentLineIndex >= 4 || !multiLinesPoints[currentLineIndex]) return;
+
+  const lineColors = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6'];
+  multiLinesPoints[currentLineIndex].push({ x, y });
+  
+  // 繪製標記點
+  drawDot(x, y, lineColors[currentLineIndex]);
+
+  // 同一條線點之間畫線連結
+  const linePts = multiLinesPoints[currentLineIndex];
+  if (linePts.length > 1) {
+    ctx.strokeStyle = lineColors[currentLineIndex];
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(linePts[linePts.length - 2].x, linePts[linePts.length - 2].y);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+  }
+
+  if (linePts.length >= 6) {
+    currentLineIndex++;
+    if (currentLineIndex >= 4) {
+      // 24 點收集完畢，開始計算
+      const result = autoCalculatePerspectiveAndK1(multiLinesPoints, canvas.width, canvas.height);
+      
+      // 更新 k1
+      const k1Input = document.getElementById('k1Distortion');
+      const k1ValueDisplay = document.getElementById('k1Value');
+      if (k1Input && k1ValueDisplay) {
+        k1Input.value = result.k1;
+        k1ValueDisplay.innerText = result.k1.toFixed(3);
+      }
+
+      // 更新 WebGL Homography 矩陣
+      currentHomography = result.homography;
+      setHomographyMatrix(currentHomography);
+
+      renderCurrentFrame();
+      document.getElementById('status').innerText = `校正完成！k1 = ${result.k1.toFixed(4)}，透視矩陣已套用`;
+      mode = 'idle';
+      return;
+    }
+  }
+  updatePerspectiveStatusUI();
 }
 
 // ============================================================
@@ -310,10 +489,6 @@ function handleCalibrationClick(x, y) {
     document.getElementById('status').innerText =
       '定標完成！';
 
-    if (getTargetBBox()) {
-      document.getElementById('btnProcess').disabled = false;
-    }
-
     mode = 'idle';
   }
 }
@@ -323,43 +498,50 @@ function handleCalibrationClick(x, y) {
 // ============================================================
 
 function handleTargetSelection(x, y) {
-  const { targetBBox } = selectTarget(x, y, ctx);
+  // 1. 渲染無網格的原始畫面，避免網格進入特徵模板
+  renderCurrentFrame(false);
 
-  // 重畫影片
-  ctx.drawImage(
-    video,
-    0,
-    0,
-    canvas.width,
-    canvas.height
-  );
+  // 2. 擷取目標特徵模板 (32x32)
+  const TEMPLATE_SIZE = 32;
+  const { targetBBox } = selectTarget(x, y, ctx, TEMPLATE_SIZE);
 
-  // 保留定標點
+  // 3. 取樣完成後，還原繪製網格
+  renderCurrentFrame(true);
+
+  // 4. 重繪定標點（若存在）
   const calPoints = getCalibrationPoints();
-
   if (calPoints.length === 2) {
     drawDot(calPoints[0].x, calPoints[0].y, '#ef4444');
     drawDot(calPoints[1].x, calPoints[1].y, '#ef4444');
   }
 
-  // 目標框
-  ctx.strokeStyle = '#22c55e';
-  ctx.lineWidth = 2;
+  // 5. 取得目前設定的搜尋半徑，計算預覽的搜尋矩形與半徑
+  const searchRadius = parseFloat(document.getElementById('roiRadius')?.value) || 60;
+  const cx = targetBBox.x + targetBBox.width / 2;
+  const cy = targetBBox.y + targetBBox.height / 2;
 
-  ctx.strokeRect(
-    targetBBox.x,
-    targetBBox.y,
-    targetBBox.width,
-    targetBBox.height
-  );
+  const searchX = Math.max(0, Math.min(canvas.width - searchRadius * 2, cx - searchRadius));
+  const searchY = Math.max(0, Math.min(canvas.height - searchRadius * 2, cy - searchRadius));
+  const searchW = Math.min(searchRadius * 2, canvas.width - searchX);
+  const searchH = Math.min(searchRadius * 2, canvas.height - searchY);
 
-  document.getElementById('status').innerText =
-    '目標與特徵顏色已選定';
+  // ✨ 6. 呈現三層精準範圍：搜尋半徑區域 + 演算法計算區域 + 中心十字靶心
+  drawTrackingGizmo(ctx, {
+    searchX,
+    searchY,
+    searchW,
+    searchH,
+    searchCenterX: cx,
+    searchCenterY: cy,
+    searchRadius,
+    matchBox: targetBBox,
+    centerX: cx,
+    centerY: cy,
+    isLost: false
+  });
 
-  if (getPxPerMeter()) {
-    document.getElementById('btnProcess').disabled = false;
-  }
-
+  document.getElementById('status').innerText = '目標與搜尋範圍已就緒！可隨時調整半徑或點擊開始追蹤';
+  document.getElementById('btnProcess').disabled = false;
   mode = 'idle';
 }
 
@@ -402,60 +584,18 @@ function handleCanvasMouseUp(e) {
   if (width > 10 && height > 10) {
     const roi = setROI(x, y, width, height);
 
-    ctx.drawImage(
-      video,
-      0,
-      0,
-      canvas.width,
-      canvas.height
-    );
+    renderCurrentFrame(true);
 
     ctx.strokeStyle = '#f59e0b';
     ctx.lineWidth = 2;
     ctx.setLineDash([6, 6]);
-
-    ctx.strokeRect(
-      roi.x,
-      roi.y,
-      roi.width,
-      roi.height
-    );
-
+    ctx.strokeRect(roi.x, roi.y, roi.width, roi.height);
     ctx.setLineDash([]);
-
-    updateMemoryEstimate(roi.width, roi.height);
-
-    document.getElementById('status').innerText =
-      'ROI 區域已選定';
-
+    document.getElementById('status').innerText = 'ROI 區域已選定';
     document.getElementById('btnTrack').disabled = false;
-
     mode = 'idle';
   }
-
   roiStartPoint = null;
-}
-
-// ============================================================
-// Memory estimate
-// ============================================================
-
-function updateMemoryEstimate(roiWidth, roiHeight) {
-  if (!video.duration) return;
-
-  const totalFrames = Math.floor(video.duration * 30);
-
-  const memMB = estimateMemoryUsage(
-    roiWidth,
-    roiHeight,
-    totalFrames
-  );
-
-  const memDisplay = document.getElementById('memDisplay');
-
-  if (memDisplay) {
-    memDisplay.innerText = `${memMB} MB`;
-  }
 }
 
 // ============================================================
@@ -477,13 +617,7 @@ function handleCanvasMouseMove(e) {
   const width = Math.abs(currentX - roiStartPoint.x);
   const height = Math.abs(currentY - roiStartPoint.y);
 
-  ctx.drawImage(
-    video,
-    0,
-    0,
-    canvas.width,
-    canvas.height
-  );
+  renderCurrentFrame(true);
 
   ctx.strokeStyle = '#f59e0b';
   ctx.lineWidth = 2;
@@ -516,104 +650,99 @@ function drawDot(x, y, color) {
 
 async function startAutoTrack() {
   const pxPerMeter = getPxPerMeter();
+  if (!pxPerMeter || pxPerMeter <= 0) {
+    alert('請先點選「定標 (點兩點)」設定真實尺度後再開始追蹤！');
+    return;
+  }
+  const searchRadius = parseFloat(document.getElementById('roiRadius')?.value) || 60;
 
-  if (
-    !pxPerMeter ||
-    !getTargetBBox() ||
-    !getTargetColor() ||
-    !getROI()
-  ) {
+  if (!getTargetBBox() || !getTargetColor()) {
     return;
   }
 
   trackingData = [];
   isTracking = true;
 
-  // UI
+  // 重設計時變數
+  lastFpsCalcTime = performance.now();
+  framesSinceLastCalc = 0;
+  const trackStartTime = performance.now();
+
+  // UI 狀態更新
   document.getElementById('btnProcess').disabled = true;
   document.getElementById('btnCalibrate').disabled = true;
   document.getElementById('btnTrack').disabled = true;
-  document.getElementById('btnROI').disabled = true;
   document.getElementById('btnExport').disabled = true;
 
-  document.getElementById('status').innerText =
-    '正在啟動高速 WebCodecs 多線程追蹤...';
+  const fpsDisplay = document.getElementById('fpsDisplay');
+  if (fpsDisplay) fpsDisplay.innerText = '計算中...';
 
-  // 停止影片預覽 render loop
+  document.getElementById('status').innerText = '正在進行逐幀自動追蹤...';
+
+  // 暫停預覽繪製
   if (renderLoopId !== null) {
     cancelAnimationFrame(renderLoopId);
     renderLoopId = null;
   }
 
-  // 重設節流計時
   lastUIUpdateTime = 0;
   lastChartUpdateTime = 0;
 
   try {
-    const fileInput = document.getElementById('videoInput');
-    const videoFile = fileInput.files[0];
-
-    if (!videoFile) {
-      throw new Error('找不到影片檔案');
-    }
-
-    // Worker 數量
-    const hardwareThreads =
-      navigator.hardwareConcurrency || 4;
-
-    const workerCount = Math.max(
-      1,
-      Math.min(hardwareThreads, 4)
-    );
-
-    console.log(`硬體執行緒: ${hardwareThreads}`);
-    console.log(`使用 Worker 數量: ${workerCount}`);
-
-    // 開始高速追蹤
-    const result = await runAutoTrackParallel({
-      videoFile,
+    const result = await runAutoTrack({
+      video,
       canvas,
       pxPerMeter,
-      workerCount,
+      searchRadius,
       isTrackingCheck: () => isTracking,
+      // 👇 注入渲染器與座標轉換
+      renderFrame: (withGrid) => renderCurrentFrame(withGrid),
+      transformCoords: (cx, cy) => {
+        const tiltAngle = parseFloat(document.getElementById('tiltAngle')?.value) || 0;
+        const calPoints = getCalibrationPoints();
+        const origin = calPoints[0] || { x: 0, y: canvas.height };
+        return transformCoordinates(cx, cy, {
+          imageWidth: canvas.width,
+          imageHeight: canvas.height,
+          tiltAngleDeg: tiltAngle,
+          originX: origin.x,
+          originY: origin.y,
+          isAlreadyRectified: true // 標記已拉正，避免二次變形
+        });
+      },
       onFrameUpdate: handleTrackingFrameUpdate
     });
 
-    // 完整結果
     trackingData = Array.isArray(result) ? result : [];
 
-    // 最後完整更新一次
     if (trackingData.length) {
       const last = trackingData[trackingData.length - 1];
-
-      updateTrackingUI(
-        last,
-        trackingData,
-        true
-      );
-
+      updateTrackingUI(last, trackingData, true);
       renderChart(trackingData);
+
+      // 計算整段追蹤的平均處理幀率
+      const totalElapsedSec = (performance.now() - trackStartTime) / 1000;
+      const avgFPS = (trackingData.length / totalElapsedSec).toFixed(1);
+      if (fpsDisplay) {
+        fpsDisplay.innerText = `均速 ${avgFPS} FPS`;
+      }
     }
 
-    document.getElementById('status').innerText =
-      `追蹤完成！共處理 ${trackingData.length} 幀`;
-
-    document.getElementById('btnExport').disabled =
-      trackingData.length === 0;
+    document.getElementById('status').innerText = `追蹤完成！共處理 ${trackingData.length} 幀`;
+    document.getElementById('btnExport').disabled = trackingData.length === 0;
   } catch (err) {
     console.error('追蹤發生錯誤:', err);
-
-    document.getElementById('status').innerText =
-      `追蹤失敗：${err?.message || '未知錯誤'}`;
+    document.getElementById('status').innerText = `追蹤失敗：${err?.message || '未知錯誤'}`;
+    if (fpsDisplay) fpsDisplay.innerText = '- FPS';
   } finally {
     isTracking = false;
-
     document.getElementById('btnProcess').disabled = false;
     document.getElementById('btnCalibrate').disabled = false;
     document.getElementById('btnTrack').disabled = false;
-    document.getElementById('btnROI').disabled = false;
+    const btnROI = document.getElementById('btnROI');
+    if (btnROI) btnROI.disabled = false;
 
-    // 恢復一般影片預覽
+    renderCurrentFrame(true); // 保證追蹤結束後畫面立即可見變形影像與網格
     startRenderLoop();
   }
 }
@@ -621,7 +750,7 @@ async function startAutoTrack() {
 // ============================================================
 // 高速追蹤 Frame Update
 //
-// track.js / Worker 可以高頻率回傳。
+// track.js 可以高頻率回傳。
 // 這裡負責限制 UI 更新頻率。
 // ============================================================
 
@@ -655,42 +784,69 @@ function handleTrackingFrameUpdate(frameData, allData) {
 function updateTrackingUI(frameData, allData, force = false) {
   if (!frameData) return;
 
-  // Canvas
-  // 高速模式不要 drawImage(video)。
-  // 只畫最後追蹤點。
-
-  if (
-    Number.isFinite(frameData.cx) &&
-    Number.isFinite(frameData.cy)
-  ) {
-    drawDot(
-      frameData.cx,
-      frameData.cy,
-      '#ef4444'
-    );
-  }
-
-  // Point Count
+  // 1. 補上已捕捉影幀數量更新
   const pointCount = document.getElementById('pointCount');
-
-  if (pointCount) {
-    pointCount.innerText = allData.length;
+  if (pointCount && Array.isArray(allData)) {
+    pointCount.innerText = allData.length.toString();
   }
 
-  // Position
-  const posDisplay = document.getElementById('posDisplay');
+  const tiltAngle = parseFloat(document.getElementById('tiltAngle')?.value) || 0;
+  const k1 = parseFloat(document.getElementById('k1Distortion')?.value) || 0;
+  const calPoints = getCalibrationPoints();
+  const origin = calPoints[0] || { x: 0, y: canvas.height };
 
-  if (posDisplay) {
-    posDisplay.innerText =
-      `X: ${frameData.x_m} m | Y: ${frameData.y_m} m`;
+  try {
+    const corrected = transformCoordinates(frameData.cx, frameData.cy, {
+      imageWidth: canvas.width,
+      imageHeight: canvas.height,
+      k1: k1,
+      tiltAngleDeg: tiltAngle,
+      homography: currentHomography,
+      originX: origin.x,
+      originY: origin.y
+    });
+
+    const posDisplay = document.getElementById('posDisplay');
+    if (posDisplay && corrected && !isNaN(corrected.x_m) && !isNaN(corrected.y_m)) {
+      posDisplay.innerText = `X: ${corrected.x_m.toFixed(3)} m | Y: ${corrected.y_m.toFixed(3)} m`;
+    } else if (posDisplay) {
+      // 尚未定標時退回顯示像素座標
+      posDisplay.innerText = `X: ${frameData.cx.toFixed(1)} px | Y: ${frameData.cy.toFixed(1)} px`;
+    }
+  } catch (e) {
+    console.warn('座標轉換警告:', e);
   }
+}
 
-  // Status
-  const status = document.getElementById('status');
+function refreshCurrentPosDisplay() {
+  if (trackingData && trackingData.length > 0) {
+    const lastFrame = trackingData[trackingData.length - 1];
+    updateTrackingUI(lastFrame, trackingData, true);
+  }
+}
 
-  if (status) {
-    status.innerText =
-      `高速解碼追蹤中... 已處理 ${allData.length} 幀`;
+function handleK1LineClick(x, y) {
+  k1LinePoints.push({ x, y });
+  drawDot(x, y, '#38bdf8'); // 以天藍色標示直線點
+
+  const count = k1LinePoints.length;
+  document.getElementById('status').innerText = `請點擊畫面上同一直線邊緣的 ${K1_TARGET_POINTS} 個點 (${count}/${K1_TARGET_POINTS})`;
+
+  if (count >= K1_TARGET_POINTS) {
+    const calculatedK1 = autoCalculateK1(k1LinePoints, canvas.width, canvas.height);
+    
+    // 套用計算結果至 UI
+    const k1Input = document.getElementById('k1Distortion');
+    const k1ValueDisplay = document.getElementById('k1Value');
+    if (k1Input && k1ValueDisplay) {
+      k1Input.value = calculatedK1;
+      k1ValueDisplay.innerText = calculatedK1.toFixed(3);
+    }
+
+    renderCurrentFrame();
+    document.getElementById('status').innerText = `k1 自動計算完成：${calculatedK1.toFixed(4)}`;
+    mode = 'idle';
+    k1LinePoints = [];
   }
 }
 
@@ -701,5 +857,26 @@ function updateTrackingUI(frameData, allData, force = false) {
 function handleExport() {
   if (!trackingData.length) return;
 
-  exportCSV(trackingData);
+  const tiltAngle = parseFloat(document.getElementById('tiltAngle')?.value) || 0;
+  const calPoints = getCalibrationPoints();
+  const origin = calPoints[0] || { x: 0, y: canvas.height };
+
+  const exportData = trackingData.map(item => {
+    const corrected = transformCoordinates(item.cx, item.cy, {
+      imageWidth: canvas.width,
+      imageHeight: canvas.height,
+      tiltAngleDeg: tiltAngle,
+      originX: origin.x,
+      originY: origin.y,
+      isAlreadyRectified: true // 👈 避免重複做透視矩陣與 k1
+    });
+
+    return {
+      ...item,
+      x_m: corrected.x_m.toFixed(4),
+      y_m: corrected.y_m.toFixed(4)
+    };
+  });
+
+  exportCSV(exportData);
 }

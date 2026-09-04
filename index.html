@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>極簡影片運動追蹤系統</title>
-  <script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.min.js"></script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -14,25 +13,13 @@
       <span id="status" class="status-badge">請載入影片以開始操作</span>
     </header>
 
-    <section class="toolbar">
-      <div class="tool-group">
+    <section class="toolbar primary-toolbar" aria-label="主要操作">
+      <div class="tool-group main-actions">
         <label for="videoInput" class="btn btn-file">📂 選擇影片</label>
         <input type="file" id="videoInput" accept="video/*" hidden>
-      </div>
-
-      <div class="tool-group">
-        <button id="btnCalibrate" class="btn" disabled>1. 定標 (點兩點)</button>
-        <div class="input-with-unit">
-          <input type="number" id="scaleLength" value="1.0" step="0.1" min="0.01" title="真實長度">
-          <span>m</span>
-        </div>
-      </div>
-
-      <div class="tool-group">
-        <button id="btnROI" class="btn" disabled>2. 劃定運動區域 (ROI)</button>
-        <button id="btnTrack" class="btn" disabled>3. 選取目標中心</button>
-        <button id="btnProcess" class="btn btn-primary" disabled>4. 開始併發自動追蹤</button>
-        <button id="btnExport" class="btn btn-success" disabled>5. 匯出 CSV</button>
+        <button id="btnTrack" class="btn" disabled>2. 選取目標中心</button>
+        <button id="btnProcess" class="btn btn-primary" disabled>3. 開始自動追蹤</button>
+        <button id="btnExport" class="btn btn-success" disabled>4. 匯出 CSV</button>
       </div>
     </section>
 
@@ -54,6 +41,47 @@
         </div>
       </section>
 
+      <aside class="settings-panel" aria-label="校正與追蹤設定">
+        <div class="card-header">校正與追蹤設定</div>
+
+        <div class="settings-section">
+          <div class="settings-label">尺度</div>
+          <button id="btnCalibrate" class="btn" disabled>定標 (點兩點)</button>
+          <div class="input-with-unit">
+            <input type="number" id="scaleLength" value="1.0" step="0.1" min="0.01" title="真實長度">
+            <span>m</span>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-label">座標方向</div>
+          <div class="input-with-unit" title="座標軸傾角 (角度)">
+            <label for="tiltAngle">傾角:</label>
+            <input type="number" id="tiltAngle" value="0" step="0.5">
+            <span>°</span>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-label">鏡頭校正</div>
+          <div class="input-with-unit" title="鏡頭桶狀/針墊畸變係數 (k1)">
+            <label for="k1Distortion">k1:</label>
+            <input type="range" id="k1Distortion" min="-0.5" max="0.5" step="0.005" value="0">
+            <span id="k1Value">0.000</span>
+          </div>
+          <button id="btnAutoPerspectiveK1" class="btn btn-primary" title="選擇 4 條線 (各 6 點) 計算透視與 k1">四線自動校正</button>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-label">追蹤範圍</div>
+          <div class="input-with-unit" title="目標動態追蹤搜尋半徑 (px)">
+            <label for="roiRadius">搜尋半徑:</label>
+            <input type="number" id="roiRadius" value="60" min="10" max="300" step="5">
+            <span>px</span>
+          </div>
+        </div>
+      </aside>
+
       <!-- 橫向並排放置於底部的雙折線圖區 -->
       <section class="charts-row">
         <div class="chart-card">
@@ -74,7 +102,7 @@
 
     <footer class="data-summary">
       <div class="info-item">定標比例: <strong id="scaleDisplay">未設定</strong></div>
-      <div class="info-item">預估記憶體用量: <strong id="memDisplay">0 MB</strong></div>
+      <div class="info-item">處理幀率: <strong id="fpsDisplay">- FPS</strong></div>
       <div class="info-item">已捕捉影幀: <strong id="pointCount">0</strong> 筆</div>
       <div class="info-item">當前目標位置: <strong id="posDisplay">X: - m | Y: - m</strong></div>
     </footer>

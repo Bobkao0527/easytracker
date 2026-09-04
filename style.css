@@ -54,6 +54,14 @@ body {
   border: 1px solid #334155;
 }
 
+.primary-toolbar {
+  justify-content: flex-start;
+}
+
+.main-actions {
+  width: 100%;
+}
+
 .tool-group {
   display: flex;
   align-items: center;
@@ -141,12 +149,13 @@ body {
 
 /* 佈局改為垂直堆疊 */
 .workspace {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  align-items: start;
   gap: 16px;
 }
 
-.viewport-card, .chart-card {
+.viewport-card, .chart-card, .settings-panel {
   background-color: #1e293b;
   border-radius: 10px;
   border: 1px solid #334155;
@@ -154,6 +163,35 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.settings-panel {
+  min-width: 0;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid #334155;
+}
+
+.settings-label {
+  color: #cbd5e1;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.settings-panel .input-with-unit {
+  width: 100%;
+  justify-content: space-between;
+}
+
+.settings-panel .input-with-unit input[type="range"] {
+  width: 100%;
 }
 
 .card-header {
@@ -193,13 +231,27 @@ body {
 
 /* 底部並排雙圖表區 */
 .charts-row {
+  grid-column: 1 / -1;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
 }
 
 @media (max-width: 900px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-panel {
+    order: 2;
+  }
+
+  .viewport-card {
+    order: 1;
+  }
+
   .charts-row {
+    order: 3;
     grid-template-columns: 1fr;
   }
 }

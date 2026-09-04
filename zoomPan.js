@@ -3,6 +3,7 @@
 let zoomLevel = 1.0;
 let panX = 0;
 let panY = 0;
+let onTransformCallback = null;
 
 // 觸控螢幕 (Touchscreen) 雙指狀態
 let initialTouchDist = 0;
@@ -13,7 +14,10 @@ let initialTouchCenterContent = { x: 0, y: 0 }; // 雙指中心在 Canvas 內容
 let initialGestureZoom = 1.0;
 let gestureCenter = { x: 0, y: 0 };
 
-export function initZoomPan(canvas) {
+export function initZoomPan(canvas, onTransformChange) {
+  if (typeof onTransformChange === 'function') {
+    onTransformCallback = onTransformChange;
+  }
   const container = canvas.parentElement;
   if (!container) return;
 
@@ -153,10 +157,49 @@ export function resetZoomPan() {
   if (canvas) applyTransform(canvas);
 }
 
+function clampPan(canvas) {
+  if (!canvas) return;
+  const container = canvas.parentElement;
+  if (!container) return;
+
+  const containerWidth = container.clientWidth;
+  const containerHeight = container.clientHeight;
+  if (!containerWidth || !containerHeight) return;
+
+  // 取得 Canvas 實際寬高與縮放後的佔用尺寸
+  const canvasWidth = canvas.offsetWidth || canvas.width || containerWidth;
+  const canvasHeight = canvas.offsetHeight || canvas.height || containerHeight;
+
+  const scaledWidth = canvasWidth * zoomLevel;
+  const scaledHeight = canvasHeight * zoomLevel;
+
+  // 設定至少要在視窗內留下的可見寬高 (最多留 100px 或 Canvas 縮放尺寸的一半)
+  const minVisibleX = Math.min(100, scaledWidth * 0.5);
+  const minVisibleY = Math.min(100, scaledHeight * 0.5);
+
+  // 計算 panX / panY 允許的最大與最小偏移量
+  const maxPanX = containerWidth - minVisibleX;
+  const minPanX = minVisibleX - scaledWidth;
+
+  const maxPanY = containerHeight - minVisibleY;
+  const minPanY = minVisibleY - scaledHeight;
+
+  // 限制 panX 與 panY 不得超越極限
+  panX = Math.max(minPanX, Math.min(maxPanX, panX));
+  panY = Math.max(minPanY, Math.min(maxPanY, panY));
+}
+
 export function applyTransform(canvas) {
+  // 繪製前先更新並限制 panX / panY
+  clampPan(canvas);
+
   canvas.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomLevel})`;
   const zoomDisplay = document.getElementById('zoomDisplay');
   if (zoomDisplay) zoomDisplay.innerText = `${Math.round(zoomLevel * 100)}%`;
+
+  if (typeof onTransformCallback === 'function') {
+    onTransformCallback();
+  }
 }
 
 export function getZoomLevel() {
