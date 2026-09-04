@@ -1,7 +1,7 @@
 // app.js
 // 主入口模組：協調定標、追蹤、圖表、匯出各子模組
 
-import {resetCalibration, addCalibrationPoint, getPxPerMeter, getCalibrationPoints, transformCoordinates, autoCalculateK1, autoCalculatePerspectiveAndK1} from './standard.js';
+import {resetCalibration, addCalibrationPoint, getPxPerMeter, getCalibrationPoints, transformCoordinates, autoCalculateK1, calculatePerspectiveFromLines} from './standard.js';
 import {resetTrackState, selectTarget, getTargetBBox, getTargetColor, setROI, runAutoTrack, drawTrackingGizmo} from './track.js';
 import {initChart, clearChart, renderChart, resizeChart} from './chart.js';
 import { exportCSV } from './export.js';
@@ -26,10 +26,10 @@ let currentVideoUrl = null;
 let roiStartPoint = null;
 
 let k1LinePoints = [];
-const K1_TARGET_POINTS = 8; // 設定目標點數 (8點)
+const K1_TARGET_POINTS = 6; // 設定目標點數 (8點)
 
-let currentLineIndex = 0; // 0, 1 (水平線) | 2, 3 (鉛直線)
-let multiLinesPoints = [[], [], [], []]; // 儲存 4 條線的點
+let currentLineIndex = 0;   // 0, 1 (水平線) | 2, 3 (鉛直線)
+let multiLinesPoints = [[], [], [], []]; // 儲存 4 條線，每條 2 點
 let currentHomography = [1,0,0, 0,1,0, 0,0,1];
 
 // ============================================================
@@ -82,7 +82,14 @@ window.onload = () => {
   document.getElementById('btnAutoK1')?.addEventListener('click', () => {
     mode = 'selectK1Line';
     k1LinePoints = [];
-    document.getElementById('status').innerText = `請點擊畫面上同一直線邊緣的 ${K1_TARGET_POINTS} 個點 (0/${K1_TARGET_POINTS})`;
+    document.getElementById('status').innerText = `請點擊畫面上同一直線/彎曲邊緣的 ${K1_TARGET_POINTS} 個點 (0/${K1_TARGET_POINTS})`;
+  });
+  // 透視校正按鈕 (4 條線，每條 2 點，共 8 點)
+  document.getElementById('btnAutoPerspective')?.addEventListener('click', () => {
+    mode = 'selectPerspectiveLines';
+    currentLineIndex = 0;
+    multiLinesPoints = [[], [], [], []];
+    updatePerspectiveStatusUI();
   });
 
   document.getElementById('btnAutoPerspectiveK1')?.addEventListener('click', () => {
@@ -173,14 +180,13 @@ window.onload = () => {
 };
 
 function updatePerspectiveStatusUI() {
-  // 修正：邊界保護
-  if (currentLineIndex >= 4 || !multiLinesPoints[currentLineIndex]) return;
-
+  if (currentLineIndex >= 4) return;
   const lineTypes = ['第 1 條水平線', '第 2 條水平線', '第 1 條鉛直線', '第 2 條鉛直線'];
   const currentCount = multiLinesPoints[currentLineIndex].length;
   document.getElementById('status').innerText = 
-    `請點選【${lineTypes[currentLineIndex]}】上的 6 個點 (${currentCount}/6)`;
+    `請點選【${lineTypes[currentLineIndex]}】的兩端端點 (${currentCount}/2)`;
 }
+
 
 // ============================================================
 // 高速追蹤 Frame Update (含即時 FPS 計算)
@@ -419,46 +425,36 @@ function handleCanvasClick(e) {
 }
 
 function handlePerspectiveLineClick(x, y) {
-  // 修正：索引超出 4 條線時直接 return
-  if (currentLineIndex >= 4 || !multiLinesPoints[currentLineIndex]) return;
+  if (currentLineIndex >= 4) return;
 
   const lineColors = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6'];
-  multiLinesPoints[currentLineIndex].push({ x, y });
+  const curLine = multiLinesPoints[currentLineIndex];
+  curLine.push({ x, y });
   
-  // 繪製標記點
+  // 標記端點
   drawDot(x, y, lineColors[currentLineIndex]);
 
-  // 同一條線點之間畫線連結
-  const linePts = multiLinesPoints[currentLineIndex];
-  if (linePts.length > 1) {
+  // 點滿 2 點連成一條線
+  if (curLine.length === 2) {
     ctx.strokeStyle = lineColors[currentLineIndex];
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(linePts[linePts.length - 2].x, linePts[linePts.length - 2].y);
-    ctx.lineTo(x, y);
+    ctx.moveTo(curLine[0].x, curLine[0].y);
+    ctx.lineTo(curLine[1].x, curLine[1].y);
     ctx.stroke();
-  }
 
-  if (linePts.length >= 6) {
-    currentLineIndex++;
+    currentLineIndex++; // 進入下一條線
+
     if (currentLineIndex >= 4) {
-      // 24 點收集完畢，開始計算
-      const result = autoCalculatePerspectiveAndK1(multiLinesPoints, canvas.width, canvas.height);
+      // 8 點全數收集完畢，計算透視矩陣
+      const currentK1 = parseFloat(document.getElementById('k1Distortion')?.value) || 0;
+      currentHomography = calculatePerspectiveFromLines(multiLinesPoints, canvas.width, canvas.height, currentK1);
       
-      // 更新 k1
-      const k1Input = document.getElementById('k1Distortion');
-      const k1ValueDisplay = document.getElementById('k1Value');
-      if (k1Input && k1ValueDisplay) {
-        k1Input.value = result.k1;
-        k1ValueDisplay.innerText = result.k1.toFixed(3);
-      }
-
-      // 更新 WebGL Homography 矩陣
-      currentHomography = result.homography;
+      // 套用至 WebGL
       setHomographyMatrix(currentHomography);
-
       renderCurrentFrame();
-      document.getElementById('status').innerText = `校正完成！k1 = ${result.k1.toFixed(4)}，透視矩陣已套用`;
+
+      document.getElementById('status').innerText = '透視校正完成！已自動拉正為正交視角';
       mode = 'idle';
       return;
     }
@@ -795,7 +791,7 @@ function refreshCurrentPosDisplay() {
 
 function handleK1LineClick(x, y) {
   k1LinePoints.push({ x, y });
-  drawDot(x, y, '#38bdf8'); // 以天藍色標示直線點
+  drawDot(x, y, '#38bdf8');
 
   const count = k1LinePoints.length;
   document.getElementById('status').innerText = `請點擊畫面上同一直線邊緣的 ${K1_TARGET_POINTS} 個點 (${count}/${K1_TARGET_POINTS})`;
@@ -803,7 +799,6 @@ function handleK1LineClick(x, y) {
   if (count >= K1_TARGET_POINTS) {
     const calculatedK1 = autoCalculateK1(k1LinePoints, canvas.width, canvas.height);
     
-    // 套用計算結果至 UI
     const k1Input = document.getElementById('k1Distortion');
     const k1ValueDisplay = document.getElementById('k1Value');
     if (k1Input && k1ValueDisplay) {
@@ -812,7 +807,7 @@ function handleK1LineClick(x, y) {
     }
 
     renderCurrentFrame();
-    document.getElementById('status').innerText = `k1 自動計算完成：${calculatedK1.toFixed(4)}`;
+    document.getElementById('status').innerText = `k1 畸變計算完成：${calculatedK1.toFixed(4)}！`;
     mode = 'idle';
     k1LinePoints = [];
   }

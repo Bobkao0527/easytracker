@@ -121,10 +121,12 @@ export function autoCalculateK1(linePoints, imageWidth, imageHeight) {
 
   let bestK1 = 0;
   let minErr = Infinity;
+  // 粗搜尋
   for (let k = -0.5; k <= 0.5; k += 0.01) {
     const err = evaluate(k);
     if (err < minErr) { minErr = err; bestK1 = k; }
   }
+  // 細搜尋
   for (let k = bestK1 - 0.01; k <= bestK1 + 0.01; k += 0.001) {
     const err = evaluate(k);
     if (err < minErr) { minErr = err; bestK1 = k; }
@@ -132,61 +134,22 @@ export function autoCalculateK1(linePoints, imageWidth, imageHeight) {
   return parseFloat(bestK1.toFixed(4));
 }
 
-// 自動求解 4 線透視矩陣與 k1
-export function autoCalculatePerspectiveAndK1(fourLines, imageWidth, imageHeight) {
-  const cx = imageWidth / 2;
-  const cy = imageHeight / 2;
-  const diag = Math.hypot(imageWidth, imageHeight) / 2;
-
-  const getPolylineLength = (line) => {
-    let len = 0;
-    for (let i = 1; i < line.length; i++) {
-      len += Math.hypot(line[i].x - line[i - 1].x, line[i].y - line[i - 1].y);
-    }
-    return Math.max(len, 1);
+export function calculatePerspectiveFromLines(fourLines, imageWidth, imageHeight) {
+  // 兩點求直線方程式 Ax + By + C = 0
+  const getLineEqFrom2Points = ([p1, p2]) => {
+    const A = p2.y - p1.y;
+    const B = p1.x - p2.x;
+    const C = p2.x * p1.y - p1.x * p2.y;
+    return { A, B, C };
   };
 
-  const longestLine = fourLines.reduce((longest, line) =>
-    getPolylineLength(line) > getPolylineLength(longest) ? line : longest,
-    fourLines[0]
-  );
+  // 畫面上看到的已經由 WebGL 拉直，直接使用使用者點選的 4 條直線
+  const eqH1 = getLineEqFrom2Points(fourLines[0]);
+  const eqH2 = getLineEqFrom2Points(fourLines[1]);
+  const eqV1 = getLineEqFrom2Points(fourLines[2]);
+  const eqV2 = getLineEqFrom2Points(fourLines[3]);
 
-  function evaluateK1(k1) {
-    const undistortedPts = longestLine.map(p => {
-      const dx = (p.x - cx) / diag;
-      const dy = (p.y - cy) / diag;
-      const factor = 1 + k1 * (dx * dx + dy * dy);
-      return { x: cx + (p.x - cx) * factor, y: cy + (p.y - cy) * factor };
-    });
-    const span = getPolylineLength(undistortedPts);
-    return getLineResidual(undistortedPts) / (span * span);
-  }
-
-  let bestK1 = 0;
-  let minErr = Infinity;
-  for (let k = -0.4; k <= 0.4; k += 0.01) {
-    const err = evaluateK1(k);
-    if (err < minErr) { minErr = err; bestK1 = k; }
-  }
-  for (let k = bestK1 - 0.01; k <= bestK1 + 0.01; k += 0.001) {
-    const err = evaluateK1(k);
-    if (err < minErr) { minErr = err; bestK1 = k; }
-  }
-
-  const undistortedLines = fourLines.map(line =>
-    line.map(p => {
-      const dx = (p.x - cx) / diag;
-      const dy = (p.y - cy) / diag;
-      const factor = 1 + bestK1 * (dx * dx + dy * dy);
-      return { x: cx + (p.x - cx) * factor, y: cy + (p.y - cy) * factor };
-    })
-  );
-
-  const eqH1 = fitLineEquation(undistortedLines[0]);
-  const eqH2 = fitLineEquation(undistortedLines[1]);
-  const eqV1 = fitLineEquation(undistortedLines[2]);
-  const eqV2 = fitLineEquation(undistortedLines[3]);
-
+  // 求出 4 個交點
   const rawIntersections = [
     getIntersection(eqH1, eqV1),
     getIntersection(eqH1, eqV2),
@@ -195,11 +158,14 @@ export function autoCalculatePerspectiveAndK1(fourLines, imageWidth, imageHeight
   ];
 
   if (rawIntersections.some(p => !p)) {
-    return { k1: parseFloat(bestK1.toFixed(4)), homography: [1,0,0, 0,1,0, 0,0,1] };
+    alert('偵測到線條平行或無交點，請重新選取！');
+    return [1, 0, 0, 0, 1, 0, 0, 0, 1];
   }
 
+  // 排序為 [左上 TL, 右上 TR, 右下 BR, 左下 BL]
   const { pTL, pTR, pBR, pBL } = sortQuadPoints(rawIntersections);
 
+  // 計算平均寬度與高度
   const targetW = (Math.hypot(pTR.x - pTL.x, pTR.y - pTL.y) + Math.hypot(pBR.x - pBL.x, pBR.y - pBL.y)) / 2;
   const targetH = (Math.hypot(pBL.x - pTL.x, pBL.y - pTL.y) + Math.hypot(pBR.x - pTR.x, pBR.y - pTR.y)) / 2;
 
@@ -229,9 +195,7 @@ export function autoCalculatePerspectiveAndK1(fourLines, imageWidth, imageHeight
   }
 
   const h = solve8x8(A, b);
-  const homography = h ? [...h, 1.0] : [1,0,0, 0,1,0, 0,0,1];
-
-  return { k1: parseFloat(bestK1.toFixed(4)), homography };
+  return h ? [...h, 1.0] : [1, 0, 0, 0, 1, 0, 0, 0, 1];
 }
 
 function solve8x8(A, b) {
