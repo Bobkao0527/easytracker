@@ -57,6 +57,119 @@ const LINE8_DESCS = [
   '第 2 條「水平線」終點 (8/8)'
 ];
 
+// 游標動態狀態跟隨提示框模組
+let activeToast = null;
+let toastFollowTimer = null;
+let toastFlyTimer = null;
+let isToastFollowing = false;
+let currentMousePos = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+window.addEventListener('mousemove', (e) => {
+  currentMousePos.x = e.clientX;
+  currentMousePos.y = e.clientY;
+  if (activeToast && isToastFollowing) {
+    updateToastPosition(activeToast, currentMousePos.x, currentMousePos.y);
+  }
+});
+// 計算游標右上角 45 度、距離螢幕最短邊 1/7 處的座標（彈窗左下角錨點）
+function updateToastPosition(toastEl, mx, my) {
+  const minEdge = Math.min(window.innerWidth, window.innerHeight);
+  const distance = minEdge / 7;
+  const offset = distance * Math.SQRT1_2; // cos(45°) = sin(45°) = √2 / 2
+
+  const anchorX = mx + offset;
+  const anchorY = my - offset;
+
+  toastEl.style.left = `${anchorX}px`;
+  toastEl.style.top = `${anchorY}px`;
+}
+// 觸發游標提示彈窗
+function triggerCursorStatusToast(text) {
+  // 排除常駐狀態與空訊息
+  const persistentStatuses = ['系統待命：請載入影像序列', ''];
+  if (persistentStatuses.includes(text?.trim())) {
+    if (activeToast) {
+      activeToast.remove();
+      activeToast = null;
+    }
+    return;
+  }
+
+  // 若已有提示框，重置計時並更新文字
+  if (!activeToast) {
+    activeToast = document.createElement('div');
+    activeToast.className = 'cursor-status-toast';
+    Object.assign(activeToast.style, {
+      position: 'fixed',
+      transform: 'translateY(-100%)', // 以 (left, top) 作為彈窗左下角定位點
+      transformOrigin: 'bottom left',
+      background: 'rgba(22, 27, 34, 0.92)',
+      border: '1px solid #38bdf8',
+      boxShadow: '0 8px 24px rgba(0, 0, 0, 0.6), 0 0 10px rgba(56, 189, 248, 0.35)',
+      borderRadius: '5px',
+      padding: '6px 12px',
+      color: '#e6edf3',
+      fontFamily: '"JetBrains Mono", monospace',
+      fontSize: '11px',
+      lineHeight: '1.4',
+      pointerEvents: 'none',
+      zIndex: '99999',
+      whiteSpace: 'nowrap',
+      opacity: '1',
+      transition: 'opacity 0.2s ease, border-color 0.2s ease'
+    });
+    document.body.appendChild(activeToast);
+  }
+
+  activeToast.innerText = text;
+  isToastFollowing = true;
+  activeToast.style.transition = 'opacity 0.2s ease';
+  activeToast.style.opacity = '1';
+  updateToastPosition(activeToast, currentMousePos.x, currentMousePos.y);
+
+  // 清除先前的飛行與結束計時
+  clearTimeout(toastFollowTimer);
+  clearTimeout(toastFlyTimer);
+
+  // 5 秒後停止跟隨，朝右上角 status 移動、縮小、淡化
+  toastFollowTimer = setTimeout(() => {
+    isToastFollowing = false;
+    const targetStatus = document.getElementById('status');
+    const targetRect = targetStatus 
+      ? targetStatus.getBoundingClientRect() 
+      : { left: window.innerWidth - 100, top: 16, width: 80, height: 20 };
+
+    // 目標定位為 status 的左下角
+    activeToast.style.transition = 'all 0.65s cubic-bezier(0.2, 0.8, 0.25, 1)';
+    activeToast.style.left = `${targetRect.left}px`;
+    activeToast.style.top = `${targetRect.bottom}px`;
+    activeToast.style.transform = 'translateY(-100%) scale(0.25)';
+    activeToast.style.opacity = '0';
+
+    toastFlyTimer = setTimeout(() => {
+      if (activeToast) {
+        activeToast.remove();
+        activeToast = null;
+      }
+    }, 700);
+  }, 5000);
+}
+// 攔截 document.getElementById('status').innerText
+function setupStatusNotifier() {
+  const statusEl = document.getElementById('status');
+  if (!statusEl) return;
+
+  const desc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'innerText');
+  Object.defineProperty(statusEl, 'innerText', {
+    set(val) {
+      desc.set.call(this, val);
+      triggerCursorStatusToast(val);
+    },
+    get() {
+      return desc.get.call(this);
+    }
+  });
+}
+
 window.onload = () => {
   video = document.getElementById('videoElement');
   canvas = document.getElementById('canvasOutput');
@@ -67,6 +180,9 @@ window.onload = () => {
   btnPlayPause = document.getElementById('btnPlayPause');
   btnPrevFrame = document.getElementById('btnPrevFrame');
   btnNextFrame = document.getElementById('btnNextFrame');
+
+  // 初始化狀態指示跟隨通知器
+  setupStatusNotifier();
 
   // 統一在此完整初始化三組示波器 (X / Y / Angle)
   const chartX = document.getElementById('chartCanvasX');
@@ -193,7 +309,7 @@ window.onload = () => {
   // 多追蹤點按鈕事件
   document.getElementById('btnTrack').addEventListener('click', () => {
     mode = 'selectTarget';
-    document.getElementById('status').innerText = '【新增追蹤點】請直接在畫布上點選欲追蹤的目標中心（可連續點選加入多點）';
+    document.getElementById('status').innerText = '【新增追蹤點】請在畫布上點選欲追蹤的目標中心';
   });
 
   // 合併監聽器：確認後連同幾何狀態與圖表一併清空
@@ -561,8 +677,9 @@ function handleTargetSelection(x, y) {
   const newTarget = addTargetPoint(x, y, ctx, 28);
   updateTargetListUI();
   redrawActiveGizmo();
+  mode = 'idle';
 
-  document.getElementById('status').innerText = `已加入目標 [${newTarget.name}]！可繼續點選新增更多點，或點擊「Step 3」開始追蹤`;
+  document.getElementById('status').innerText = `已加入目標 [${newTarget.name}]！可手動拖曳調整，或再次點擊「新增追蹤點」加入其他點`;
   document.getElementById('btnProcess').disabled = false;
 }
 
