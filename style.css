@@ -214,129 +214,6 @@ body {
   height: 28px;
 }
 
-/* 雙欄數值輸入卡片 */
-.control-grid-2col {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
-.input-card {
-  background: #090d12;
-  border: 1px solid #1c222b;
-  border-radius: 4px;
-  padding: 6px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.sub-label {
-  font-size: 9px;
-  color: #8b949e;
-  font-family: var(--font-mono);
-}
-
-/* 定標醒目大按鈕 */
-.btn-action-calib {
-  height: 34px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 10px;
-  background: #1b2636;
-  border-color: #274765;
-  color: #79c0ff;
-}
-
-.btn-action-calib:hover:not(:disabled) {
-  background: #223750;
-  border-color: #388bfd;
-}
-
-.calib-btn-inner {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-weight: 600;
-}
-
-.calib-badge {
-  font-size: 9px;
-  background: rgba(56, 189, 248, 0.15);
-  border: 1px solid rgba(56, 189, 248, 0.3);
-  color: #38bdf8;
-  padding: 1px 5px;
-  border-radius: 3px;
-  font-family: var(--font-mono);
-}
-
-/* 畸變校正磁貼工具列 (Tool Tiles) */
-.calib-tools-shelf {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.shelf-label {
-  font-size: 9px;
-  font-family: var(--font-mono);
-  color: var(--text-dim);
-}
-
-.calib-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-}
-
-.span-2 {
-  grid-column: span 2;
-}
-
-.btn-tool-tile {
-  background: #141920;
-  border: 1px solid #232a35;
-  border-radius: 4px;
-  padding: 6px 8px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  text-align: left;
-  height: auto;
-}
-
-.btn-tool-tile:hover:not(:disabled) {
-  background: #1c232d;
-  border-color: #388bfd;
-}
-
-.tile-icon {
-  font-size: 14px;
-  color: #a855f7;
-}
-
-.tile-text {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.2;
-}
-
-.tile-text strong {
-  font-size: 10px;
-  color: #e6edf3;
-}
-
-.tile-text small {
-  font-size: 8.5px;
-  color: #7d8590;
-}
-
-/* 平板專屬頁籤欄（預設在電腦版隱藏） */
-.mobile-tab-bar {
-  display: none;
-}
-
 .step-tag {
   background: rgba(0,0,0,0.3);
   padding: 1px 4px;
@@ -365,10 +242,10 @@ body {
   grid-template-rows: minmax(0, 1fr) 210px;
   overflow: hidden;
   gap: 1px;
-  background-color: var(--border-dim); /* 讓間隙成為銳利的 1px 窗格分割線 */
+  background-color: var(--border-dim);
 }
 
-/* 共通面板樣式 (Panel Archetype) */
+/* 共通面板樣式 */
 .panel {
   background: var(--bg-panel);
   display: flex;
@@ -475,7 +352,7 @@ body {
   gap: 6px;
 }
 
-/* 專業 NLE 播放控制條 (Playback Timeline) */
+/* 專業 NLE 播放控制條 */
 .playback-timeline-bar {
   height: 38px;
   background: var(--bg-header);
@@ -559,7 +436,7 @@ body {
   text-align: center;
 }
 
-/* 4. 右側檢視面板 (Inspector Panel) */
+/* 4. 右側檢視面板 (Inspector Panel) & 校準組件整合 */
 .inspector-panel {
   grid-column: 2;
   grid-row: 1;
@@ -569,6 +446,7 @@ body {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
   z-index: 10;
 }
 
@@ -580,14 +458,34 @@ body {
   letter-spacing: 0.05em;
 }
 
-/* 滾動內容容器 */
+/* 控制台滾動內容區 */
 .inspector-scroll-content {
-  flex: 1;
+  flex: 1 1 0%;
+  min-height: 0;
   overflow-y: auto;
-  padding: 10px;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  padding: 10px 10px 45px 10px;
+}
+
+.inspector-scroll-content::-webkit-scrollbar {
+  width: 6px;
+}
+.inspector-scroll-content::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 3px;
+}
+.inspector-scroll-content::-webkit-scrollbar-thumb {
+  background: #2d3748;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+.inspector-scroll-content::-webkit-scrollbar-thumb:hover {
+  background: #38bdf8;
 }
 
 /* 現代化卡片容器 (Details Accordion) */
@@ -657,6 +555,20 @@ body {
   margin-top: 4px;
 }
 
+/* 控制行佈局 */
+.control-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.control-label {
+  font-size: 11px;
+  color: #c9d1d9;
+}
+
+/* 微調步進滑桿欄位 (Smart Stepper) */
 .smart-stepper-field {
   display: flex;
   align-items: center;
@@ -711,6 +623,17 @@ body {
   box-shadow: 0 0 4px rgba(0,0,0,0.8);
 }
 
+.val-badge {
+  font-size: 10px;
+  color: var(--accent-cyan);
+  background: var(--bg-input);
+  padding: 1px 4px;
+  border: 1px solid var(--border-dim);
+  border-radius: 3px;
+  min-width: 32px;
+  text-align: right;
+}
+
 .btn-micro-reset {
   background: transparent;
   border: none;
@@ -729,77 +652,27 @@ body {
   gap: 5px;
 }
 
-.config-group {
-  background: #111418;
-  border: 1px solid var(--border-subtle);
+/* 空間尺度雙欄輸入 */
+.control-grid-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.input-card {
+  background: #090d12;
+  border: 1px solid #1c222b;
   border-radius: 4px;
-  padding: 8px;
+  padding: 6px 8px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
 
-.group-header {
+.sub-label {
   font-size: 9px;
-  font-weight: 700;
-  color: var(--text-muted);
-  letter-spacing: 0.05em;
+  color: #8b949e;
   font-family: var(--font-mono);
-  padding-bottom: 4px;
-  border-bottom: 1px solid #1c2127;
-}
-
-.control-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-}
-
-.compact-top {
-  margin-top: 4px;
-}
-
-.control-label {
-  font-size: 11px;
-  color: #c9d1d9;
-}
-
-.slider-field {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1;
-  justify-content: flex-end;
-}
-
-.slider-field input[type="range"] {
-  width: 90px;
-  height: 4px;
-  appearance: none;
-  background: #272e38;
-  border-radius: 2px;
-  outline: none;
-}
-
-.slider-field input[type="range"]::-webkit-slider-thumb {
-  appearance: none;
-  width: 10px;
-  height: 10px;
-  background: var(--accent-cyan);
-  border-radius: 50%;
-  cursor: pointer;
-}
-
-.val-badge {
-  font-size: 10px;
-  color: var(--accent-cyan);
-  background: var(--bg-input);
-  padding: 1px 4px;
-  border: 1px solid var(--border-dim);
-  border-radius: 3px;
-  min-width: 32px;
-  text-align: right;
 }
 
 .input-unit-box {
@@ -829,182 +702,102 @@ body {
   margin-left: 4px;
 }
 
-.multi-btn-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  margin-top: 2px;
+/* 尺規定標醒目按鈕 */
+.btn-action-calib {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  background: #1b2636;
+  border-color: #274765;
+  color: #79c0ff;
 }
 
-/* 5. 下方時序分析示波區 (Charts Panel) */
-.charts-panel {
-  grid-column: 1 / -1;
-  grid-row: 2;
-  border-top: 1px solid var(--border-dim);
-  min-width: 0;
-  min-height: 0;
+.btn-action-calib:hover:not(:disabled) {
+  background: #223750;
+  border-color: #388bfd;
 }
 
-.charts-subgrid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  height: 100%;
-  gap: 1px;
-  background-color: var(--border-dim);
-  min-height: 0;
+.calib-btn-inner {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 600;
 }
 
-.chart-box {
-  background: var(--bg-panel);
+.calib-badge {
+  font-size: 9px;
+  background: rgba(56, 189, 248, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  color: #38bdf8;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+}
+
+/* 畸變與透視磁貼工具列 (Tool Tiles) */
+.calib-tools-shelf {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  min-width: 0;
-  min-height: 0;
-}
-
-.chart-tab-header {
-  height: 24px;
-  background: var(--bg-header);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0 10px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.chart-tab-title {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 600;
-  color: var(--text-muted);
-}
-
-.channel-indicator {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  padding: 1px 5px;
-  border-radius: 2px;
-}
-.ch-x { background: rgba(56, 189, 248, 0.15); color: #38bdf8; }
-.ch-y { background: rgba(239, 68, 68, 0.15); color: #f87171; }
-
-/* 示波器圖表容器：允許水平捲動，但隱藏縱向 */
-.chart-body {
-  flex: 1;
-  background: #090d12;
-  position: relative;
-  overflow-x: auto;
-  overflow-y: hidden;
-  min-height: 0;
-}
-
-.chart-body canvas {
-  display: block;
-  height: 100%;
-}
-
-/* 6. 底部即時遙測狀態列 (Engineering Telemetry Bar) */
-.telemetry-bar {
-  height: 24px;
-  background: #0a0d12;
-  border-top: 1px solid var(--border-dim);
-  display: flex;
-  align-items: center;
-  padding: 0 12px;
-  font-size: 10px;
-  color: var(--text-muted);
-  gap: 12px;
-  flex-shrink: 0;
-}
-
-.telemetry-node {
-  display: flex;
-  align-items: center;
   gap: 5px;
 }
 
-.node-key {
+.shelf-label {
   font-size: 9px;
+  font-family: var(--font-mono);
   color: var(--text-dim);
-  font-family: var(--font-mono);
 }
 
-.node-val {
-  font-weight: 500;
-  color: #c9d1d9;
+.calib-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
 }
 
-.mono {
-  font-family: var(--font-mono);
+.span-2 {
+  grid-column: span 2;
 }
 
-.highlight .node-val {
-  color: var(--accent-cyan);
-}
-
-.telemetry-separator {
-  width: 1px;
-  height: 12px;
-  background-color: var(--border-dim);
-}
-
-.telemetry-align-right {
-  margin-left: auto;
+.btn-tool-tile {
+  background: #141920;
+  border: 1px solid #232a35;
+  border-radius: 4px;
+  padding: 6px 8px;
   display: flex;
   align-items: center;
+  gap: 8px;
+  text-align: left;
+  height: auto;
 }
 
-.sys-health-chip {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  padding: 1px 6px;
-  border-radius: 2px;
-  background: rgba(35, 134, 54, 0.2);
-  color: #3fb950;
-  border: 1px solid rgba(46, 160, 67, 0.3);
+.btn-tool-tile:hover:not(:disabled) {
+  background: #1c232d;
+  border-color: #388bfd;
 }
 
-/* 捲動軸客製化 (Scrollbars) */
-::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: #272f38;
-  border-radius: 2px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #3b4450;
+.tile-icon {
+  font-size: 14px;
+  color: #a855f7;
 }
 
-/* 多目標標籤面板樣式 */
-.group-header-flex {
+.tile-text {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  color: #94a3b8;
-  margin-bottom: 8px;
+  flex-direction: column;
+  line-height: 1.2;
 }
 
-.btn-text-danger {
-  background: transparent;
-  border: none;
-  color: #f43f5e;
-  font-size: 0.72rem;
-  cursor: pointer;
-  padding: 0 4px;
-}
-.btn-text-danger:hover {
-  text-decoration: underline;
+.tile-text strong {
+  font-size: 10px;
+  color: #e6edf3;
 }
 
+.tile-text small {
+  font-size: 8.5px;
+  color: #7d8590;
+}
+
+/* 目標點標籤清單 */
 .target-chip-list {
   display: flex;
   flex-wrap: wrap;
@@ -1075,7 +868,27 @@ body {
   color: #ef4444;
 }
 
-/* 圖表通道選擇器工具列 */
+.btn-text-danger {
+  background: transparent;
+  border: none;
+  color: #f43f5e;
+  font-size: 0.72rem;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.btn-text-danger:hover {
+  text-decoration: underline;
+}
+
+/* 5. 下方時序分析示波區 (Charts Panel) */
+.charts-panel {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  border-top: 1px solid var(--border-dim);
+  min-width: 0;
+  min-height: 0;
+}
+
 .chart-view-toolbar {
   display: flex;
   align-items: center;
@@ -1175,6 +988,146 @@ body {
   font-weight: 800;
 }
 
+.charts-subgrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  height: 100%;
+  gap: 1px;
+  background-color: var(--border-dim);
+  min-height: 0;
+}
+
+.chart-box {
+  background: var(--bg-panel);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+}
+
+.chart-tab-header {
+  height: 24px;
+  background: var(--bg-header);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.chart-tab-title {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.channel-indicator {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+.ch-x { background: rgba(56, 189, 248, 0.15); color: #38bdf8; }
+.ch-y { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+
+.chart-body {
+  flex: 1;
+  background: #090d12;
+  position: relative;
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-height: 0;
+}
+
+.chart-body canvas {
+  display: block;
+  height: 100%;
+}
+
+/* 6. 底部即時遙測狀態列 */
+.telemetry-bar {
+  height: 24px;
+  background: #0a0d12;
+  border-top: 1px solid var(--border-dim);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 10px;
+  color: var(--text-muted);
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.telemetry-node {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.node-key {
+  font-size: 9px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+}
+
+.node-val {
+  font-weight: 500;
+  color: #c9d1d9;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.highlight .node-val {
+  color: var(--accent-cyan);
+}
+
+.telemetry-separator {
+  width: 1px;
+  height: 12px;
+  background-color: var(--border-dim);
+}
+
+.telemetry-align-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+}
+
+.sys-health-chip {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: 2px;
+  background: rgba(35, 134, 54, 0.2);
+  color: #3fb950;
+  border: 1px solid rgba(46, 160, 67, 0.3);
+}
+
+/* 捲動軸客製化 (通用) */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #272f38;
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3b4450;
+}
+
+/* 平板專屬頁籤欄（電腦版預設隱藏） */
+.mobile-tab-bar {
+  display: none;
+}
+
 /* ==========================================================================
    📱 直式平板與中小螢幕響應式佈局 (Tablet Portrait Media Query)
    適用比例：iPad / Android 平板直向 (寬度 1024px 以下)
@@ -1182,32 +1135,28 @@ body {
 
 @media (max-width: 1024px) and (orientation: portrait), (max-width: 900px) {
 
-  /* 1. 將工作空間重設為「上下兩層式」 */
   .workbench-workspace {
     display: flex;
     flex-direction: column;
-    height: calc(100vh - 32px - 52px - 26px); /* 扣除標題列、Ribbon、狀態列 */
+    height: calc(100vh - 32px - 52px - 26px);
     overflow: hidden;
   }
 
-  /* 2. 上方畫布監視器：佔用約 45% ~ 50% 垂直高度，確保影像清晰 */
+  /* 上方監視器維持高度 */
   .viewport-panel {
-    flex: 0 0 46vh;
-    min-height: 280px;
+    flex: 0 0 45vh;
+    min-height: 260px;
     border-bottom: 2px solid var(--border-dim);
   }
 
-  /* 3. 顯示平板頁籤切換器 */
-  .desktop-only-header {
-    display: none;
-  }
-
+  /* 釘在中間的切換頁籤欄 */
   .mobile-tab-bar {
     display: flex;
-    background: #0f141c;
+    background: #0d1117;
     border-bottom: 1px solid var(--border-dim);
-    height: 36px;
+    height: 38px;
     flex-shrink: 0;
+    z-index: 50;
   }
 
   .m-tab-btn {
@@ -1215,8 +1164,8 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 7px;
-    background: transparent;
+    gap: 8px;
+    background: #141920;
     border: none;
     border-bottom: 2px solid transparent;
     color: #8b949e;
@@ -1224,80 +1173,47 @@ body {
     font-family: var(--font-mono);
     font-weight: 600;
     cursor: pointer;
+    transition: all 0.15s ease;
   }
 
   .m-tab-btn.active {
     color: #38bdf8;
+    background: #1a222d;
     border-bottom-color: #38bdf8;
-    background: rgba(56, 189, 248, 0.05);
   }
 
-  /* 4. 下方容器：控制台與圖表共用剩餘空間 (透過 Tabs 切換) */
-  .inspector-panel {
-    flex: 1;
-    border-left: none;
-    height: auto;
-    display: flex;
-  }
-
-  .charts-panel {
-    display: none; /* 平板直式下，預設由頁籤控制顯示哪一個 */
-    flex: 1;
-    border-top: none;
-    height: auto;
-  }
-
-  /* 當切換到圖表標籤時的展示切換 */
-  .charts-panel.tab-active {
-    display: flex;
-  }
-
-  .inspector-panel.tab-hidden {
+  /* 隱藏桌機版控制台專用頂條 */
+  .desktop-only-header {
     display: none;
   }
 
-  /* 5. 針對觸控觸發友善加大 (Touch Target Ergonomics) */
-  .smart-stepper-field input[type="range"] {
-    width: 110px; /* 平板寬度足夠，加長滑桿好拉動 */
-    height: 8px;
+  /* 下方切換控制：控制台 vs 圖表 */
+  .inspector-panel {
+    flex: 1;
+    border-left: none;
+    min-height: 0;
+    height: 100%;
+    display: flex;
+    overflow: hidden;
   }
 
-  .btn-step {
-    width: 32px;
-    height: 32px;
-    font-size: 15px;
+  .charts-panel {
+    display: none;
+    flex: 1;
+    border-top: none;
+    min-height: 0;
+  }
+  
+  .inspector-scroll-content {
+    padding-bottom: 60px; /* 平板直式底部拇指操作空間 */
   }
 
-  .val-badge {
-    min-width: 42px;
-    font-size: 11px;
-    padding: 3px 6px;
+  /* 狀態切換 Class */
+  .inspector-panel.tab-hidden {
+    display: none !important;
   }
 
-  .btn-action-calib {
-    height: 40px;
-  }
-
-  .btn-tool-tile {
-    padding: 10px;
-  }
-
-  /* Ribbon 工具列橫向流暢滑動 */
-  .action-ribbon {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    padding: 0 8px;
-  }
-
-  .ribbon-controls .btn-tool {
-    height: 32px;
-    padding: 0 10px;
-  }
-
-  /* 圖表在平板直式下轉為垂直堆疊或平滑捲動 */
-  .charts-subgrid {
-    grid-template-columns: 1fr;
-    grid-template-rows: repeat(3, 160px);
-    overflow-y: auto;
+  .charts-panel.tab-active {
+    display: flex !important;
   }
 }
