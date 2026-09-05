@@ -3,15 +3,165 @@ let calibrationPoints = [];
 let pxPerMeter = null;
 const DEFAULT_PX_PER_METER = 1000; // 預設 1000 px/m
 
+// DLT 方程求解輔助函式：以部分主元高斯消去法解 8 個自由度單應性矩陣
+function solveDLTHomography(src, dst) {
+  const A = [];
+  const b = [];
+  for (let i = 0; i < 4; i++) {
+    const sx = src[i].x, sy = src[i].y;
+    const dx = dst[i].x, dy = dst[i].y;
+    A.push([sx, sy, 1, 0, 0, 0, -dx * sx, -dx * sy]);
+    b.push(dx);
+    A.push([0, 0, 0, sx, sy, 1, -dy * sx, -dy * sy]);
+    b.push(dy);
+  }
+
+  const n = 8;
+  for (let i = 0; i < n; i++) {
+    let maxRow = i;
+    for (let k = i + 1; k < n; k++) {
+      if (Math.abs(A[k][i]) > Math.abs(A[maxRow][i])) maxRow = k;
+    }
+    [A[i], A[maxRow]] = [A[maxRow], A[i]];
+    [b[i], b[maxRow]] = [b[maxRow], b[i]];
+
+    if (Math.abs(A[i][i]) < 1e-10) return null;
+
+    for (let k = i + 1; k < n; k++) {
+      const factor = A[k][i] / A[i][i];
+      for (let j = i; j < n; j++) {
+        A[k][j] -= factor * A[i][j];
+      }
+      b[k] -= factor * b[i];
+    }
+  }
+
+  const h = new Array(8);
+  for (let i = n - 1; i >= 0; i--) {
+    let sum = b[i];
+    for (let j = i + 1; j < n; j++) {
+      sum -= A[i][j] * h[j];
+    }
+    h[i] = sum / A[i][i];
+  }
+
+  return [
+    h[0], h[1], h[2],
+    h[3], h[4], h[5],
+    h[6], h[7], 1.0
+  ];
+}
+
 // ============================================================
 // 座標轉換（去畸變 -> 透視校正 -> 傾角旋轉 -> 物理公尺轉換）
 // ============================================================
+export function fitHomographyToCanvas(H_pixel, w, h) {
+  const testPoints = [
+    [0, 0, 1], [w / 2, 0, 1], [w, 0, 1],
+    [0, h / 2, 1], [w / 2, h / 2, 1], [w, h / 2, 1],
+    [0, h, 1], [w / 2, h, 1], [w, h, 1]
+  ];
+
+  const validProj = [];
+  for (const pt of testPoints) {
+    const z = H_pixel[6] * pt[0] + H_pixel[7] * pt[1] + H_pixel[8] * pt[2];
+    if (z > 1e-4) {
+      const x = (H_pixel[0] * pt[0] + H_pixel[1] * pt[1] + H_pixel[2] * pt[2]) / z;
+      const y = (H_pixel[3] * pt[0] + H_pixel[4] * pt[1] + H_pixel[5] * pt[2]) / z;
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        validProj.push({ x, y });
+      }
+    }
+  }
+
+  if (validProj.length < 3) return H_pixel;
+
+  let minX = Infinity, maxX = -Infinity;
+  let minY = Infinity, maxY = -Infinity;
+  for (const p of validProj) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+
+  const boxW = maxX - minX;
+  const boxH = maxY - minY;
+  if (boxW <= 1e-4 || boxH <= 1e-4) return H_pixel;
+
+  const scale = Math.min((w * 0.9) / boxW, (h * 0.9) / boxH);
+  const offsetX = (w - boxW * scale) / 2 - minX * scale;
+  const offsetY = (h - boxH * scale) / 2 - minY * scale;
+
+  const M_fit = [
+    scale, 0, offsetX,
+    0, scale, offsetY,
+    0, 0, 1
+  ];
+
+  return multiply3x3(M_fit, H_pixel);
+}
+
+export function calculateHomographyFromVanishingPoints(Vz, Vx, imgW, imgH) {
+  const cx = imgW / 2;
+  const cy = imgH / 2;
+
+  let f = Math.hypot(imgW, imgH);
+  if (Vz && Vx) {
+    const vZx = Vz.x - cx;
+    const vZy = Vz.y - cy;
+    const vXx = Vx.x - cx;
+    const vXy = Vx.y - cy;
+    const fSquared = -(vZx * vXx + vZy * vXy);
+    if (fSquared > 0) {
+      const computedF = Math.sqrt(fSquared);
+      if (computedF > imgW * 0.3 && computedF < imgW * 3.0) {
+        f = computedF;
+      }
+    }
+  }
+
+  let dZ = Vz ? [Vz.x - cx, Vz.y - cy, f] : [0, 0, f];
+  if (dZ[2] < 0) dZ = [-dZ[0], -dZ[1], -dZ[2]];
+  const uZ = normalize3(dZ);
+
+  let dX = Vx ? [Vx.x - cx, Vx.y - cy, f] : [1, 0, 0];
+  if (dot3(dX, [1, 0, 0]) < 0) dX = [-dX[0], -dX[1], -dX[2]];
+  const uX = normalize3(dX);
+
+  let uY = cross3(uZ, dX);
+  uY = normalize3(uY);
+  if (dot3(uY, [0, 1, 0]) < 0) uY = [-uY[0], -uY[1], -uY[2]];
+
+  // ★ 轉正視角需使用 R^T
+  const R_rect = [
+    uX[0], uX[1], uX[2],
+    uY[0], uY[1], uY[2],
+    uZ[0], uZ[1], uZ[2]
+  ];
+
+  const K = [f, 0, cx,  0, f, cy,  0, 0, 1];
+  const K_inv = [1 / f, 0, -cx / f,  0, 1 / f, -cy / f,  0, 0, 1];
+
+  const H_pixel_raw = multiply3x3(multiply3x3(K, R_rect), K_inv);
+  const H_pixel = fitHomographyToCanvas(H_pixel_raw, imgW, imgH);
+  const H_pixel_inv = invert3x3(H_pixel) || [1,0,0, 0,1,0, 0,0,1];
+  const H_uv_inv = convertPixelHomographyToUV(H_pixel_inv, imgW, imgH);
+
+  return {
+    homography: H_uv_inv,
+    homographyPixel: H_pixel,
+    rectifiedBox: { f, Vz, Vx }
+  };
+}
+
 export function transformCoordinates(rawX, rawY, options = {}) {
   const {
     imageWidth = 1920,
     imageHeight = 1080,
     k1 = 0,
     tiltAngleDeg = 0,
+    homographyPixel = null,
     homography = [1,0,0, 0,1,0, 0,0,1],
     originX = 0,
     originY = imageHeight,
@@ -37,10 +187,10 @@ export function transformCoordinates(rawX, rawY, options = {}) {
       y = cy + (rawY - cy) * factor;
     }
 
-    const invH = invert3x3(homography) || [1,0,0, 0,1,0, 0,0,1];
-    const w_elem = invH[6] * x + invH[7] * y + invH[8];
-    rectX = Math.abs(w_elem) > 1e-7 ? (invH[0] * x + invH[1] * y + invH[2]) / w_elem : x;
-    rectY = Math.abs(w_elem) > 1e-7 ? (invH[3] * x + invH[4] * y + invH[5]) / w_elem : y;
+    const H = homographyPixel || homography;
+    const w_elem = H[6] * x + H[7] * y + H[8];
+    rectX = Math.abs(w_elem) > 1e-7 ? (H[0] * x + H[1] * y + H[2]) / w_elem : x;
+    rectY = Math.abs(w_elem) > 1e-7 ? (H[3] * x + H[4] * y + H[5]) / w_elem : y;
   }
 
   // 相對於自訂原點
@@ -48,7 +198,7 @@ export function transformCoordinates(rawX, rawY, options = {}) {
   const dy = originY - rectY; // 笛卡爾座標 Y 軸向上為正
 
   // 傾角轉正
-  const rad = (-tiltAngleDeg * Math.PI) / 180;
+  const rad = (tiltAngleDeg * Math.PI) / 180;
   const rotX = dx * Math.cos(rad) - dy * Math.sin(rad);
   const rotY = dx * Math.sin(rad) + dy * Math.cos(rad);
 
@@ -104,56 +254,114 @@ export function calculateHomographyFrom4Points(corners, imgW, imgH) {
   }
 
   const [c0, c1, c2, c3] = corners;
-  const Vz = getLineIntersection(c3, c0, c2, c1);
-  const Vx = getLineIntersection(c0, c1, c3, c2);
+  const w1 = Math.hypot(c1.x - c0.x, c1.y - c0.y);
+  const w2 = Math.hypot(c2.x - c3.x, c2.y - c3.y);
+  const h1 = Math.hypot(c3.x - c0.x, c3.y - c0.y);
+  const h2 = Math.hypot(c2.x - c1.x, c2.y - c1.y);
 
+  const W_rect = (w1 + w2) / 2;
+  const H_rect = (h1 + h2) / 2;
+  if (W_rect < 5 || H_rect < 5) throw new Error('點選範圍過小，無法計算');
+
+  // 等比例置中於畫布 80% 區域
+  const scale = Math.min((imgW * 0.8) / W_rect, (imgH * 0.8) / H_rect);
+  const tw = W_rect * scale;
+  const th = H_rect * scale;
+  const x0 = (imgW - tw) / 2;
+  const y0 = (imgH - th) / 2;
+
+  const dst = [
+    { x: x0, y: y0 },
+    { x: x0 + tw, y: y0 },
+    { x: x0 + tw, y: y0 + th },
+    { x: x0, y: y0 + th }
+  ];
+
+  // H_pixel: Raw -> Rectified (正向投影)
+  const H_pixel = solveDLTHomography(corners, dst);
+  if (!H_pixel) throw new Error('4 點矩陣退化，請確認角點構成凸四邊形');
+
+  // WebGL Shader 需要逆映射矩陣 (Rectified UV -> Raw UV)
+  const H_pixel_inv = invert3x3(H_pixel) || [1,0,0, 0,1,0, 0,0,1];
+  const H_uv_inv = convertPixelHomographyToUV(H_pixel_inv, imgW, imgH);
+
+  return {
+    homography: H_uv_inv,        // 給 WebGL Fragment Shader
+    homographyPixel: H_pixel,    // 給 CPU 端正向座標換算
+    rectifiedBox: { w: tw, h: th }
+  };
+}
+
+// ============================================================
+// 雙組平行線 8 點透視校正（兩兩一組共 4 條線）
+//    P0-P1 // P2-P3 (第 1 組：鉛直垂直線段，交點為 Vy)
+//    P4-P5 // P6-P7 (第 2 組：水平橫向線段，交點為 Vx)
+// ============================================================
+export function calculateHomographyFrom8Points(points8, imgW, imgH) {
+  if (!points8 || points8.length !== 8) {
+    throw new Error('必須提供 8 個點（兩兩一組，共 4 條線）');
+  }
+
+  // 兩條鉛直線求鉛直消失點 Vy
+  const Vy = getLineIntersection(points8[0], points8[1], points8[2], points8[3]);
+  // 兩條水平線求水平消失點 Vx
+  const Vx = getLineIntersection(points8[4], points8[5], points8[6], points8[7]);
+
+  return calculateHomographyFromVerticalVanishingPoints(Vy, Vx, imgW, imgH);
+}
+
+export function calculateHomographyFromVerticalVanishingPoints(Vy, Vx, imgW, imgH) {
   const cx = imgW / 2;
   const cy = imgH / 2;
 
   let f = Math.hypot(imgW, imgH);
-  if (Vz && Vx) {
-    const vZx = Vz.x - cx;
-    const vZy = Vz.y - cy;
+  if (Vy && Vx) {
+    const vYx = Vy.x - cx;
+    const vYy = Vy.y - cy;
     const vXx = Vx.x - cx;
     const vXy = Vx.y - cy;
-    const fSquared = -(vZx * vXx + vZy * vXy);
+    const fSquared = -(vYx * vXx + vYy * vXy);
     if (fSquared > 0) {
       const computedF = Math.sqrt(fSquared);
-      if (computedF > imgW * 0.3 && computedF < imgW * 3.0) {
+      if (computedF > imgW * 0.2 && computedF < imgW * 4.0) {
         f = computedF;
       }
     }
   }
 
-  let dZ = Vz ? [Vz.x - cx, Vz.y - cy, f] : [0, 0, f];
-  if (dZ[2] < 0) dZ = [-dZ[0], -dZ[1], -dZ[2]];
-  const uZ = normalize3(dZ);
-
   let dX = Vx ? [Vx.x - cx, Vx.y - cy, f] : [1, 0, 0];
   if (dot3(dX, [1, 0, 0]) < 0) dX = [-dX[0], -dX[1], -dX[2]];
+  const uX = normalize3(dX);
 
-  let uY = cross3(uZ, dX);
-  uY = normalize3(uY);
-  if (dot3(uY, [0, 1, 0]) < 0) uY = [-uY[0], -uY[1], -uY[2]];
+  let dY = Vy ? [Vy.x - cx, Vy.y - cy, f] : [0, -1, 0];
+  if (dot3(dY, [0, -1, 0]) < 0) dY = [-dY[0], -dY[1], -dY[2]];
+  const uY = normalize3(dY);
 
-  const uX = normalize3(cross3(uY, uZ));
+  let uZ = cross3(uX, uY);
+  uZ = normalize3(uZ);
+  if (dot3(uZ, [0, 0, 1]) < 0) uZ = [-uZ[0], -uZ[1], -uZ[2]];
 
-  const R = [
-    uX[0], uY[0], uZ[0],
-    uX[1], uY[1], uZ[1],
-    uX[2], uY[2], uZ[2]
+  const uY_ortho = normalize3(cross3(uZ, uX));
+
+  // ★ 轉正視角需使用 R^T
+  const R_rect = [
+    uX[0], uX[1], uX[2],
+    uY_ortho[0], uY_ortho[1], uY_ortho[2],
+    uZ[0], uZ[1], uZ[2]
   ];
 
   const K = [f, 0, cx,  0, f, cy,  0, 0, 1];
   const K_inv = [1 / f, 0, -cx / f,  0, 1 / f, -cy / f,  0, 0, 1];
 
-  const H_pixel = multiply3x3(multiply3x3(K, R), K_inv);
-  const H_uv = convertPixelHomographyToUV(H_pixel, imgW, imgH);
+  const H_pixel_raw = multiply3x3(multiply3x3(K, R_rect), K_inv);
+  const H_pixel = fitHomographyToCanvas(H_pixel_raw, imgW, imgH);
+  const H_pixel_inv = invert3x3(H_pixel) || [1,0,0, 0,1,0, 0,0,1];
+  const H_uv_inv = convertPixelHomographyToUV(H_pixel_inv, imgW, imgH);
 
-  // 只回傳單應性矩陣與輔助資訊，定標交給獨立的定標模組
   return {
-    homography: H_uv,
-    rectifiedBox: { f, Vz, Vx }
+    homography: H_uv_inv,
+    homographyPixel: H_pixel,
+    rectifiedBox: { f, Vy, Vx }
   };
 }
 

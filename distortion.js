@@ -7,6 +7,7 @@ let texture = null;
 let offscreenCanvas = null;
 let k1UniformLocation = null;
 let aspectUniformLocation = null;
+let fovScaleUniformLocation = null;
 
 const vsSource = `
   attribute vec2 a_position;
@@ -28,9 +29,10 @@ const fsSource = `
   uniform float u_k1;
   uniform float u_aspect;
   uniform mat3 u_homography;
+  uniform float u_fovScale;
 
   void main() {
-    // 1. 套用透視變換 (Screen Pixel -> 原圖去畸變座標)
+    // 1. 透視逆映射
     vec3 proj = u_homography * vec3(v_texCoord, 1.0);
     if (proj.z <= 0.0) {
       gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
@@ -38,15 +40,25 @@ const fsSource = `
     }
     vec2 uv_rect = proj.xy / proj.z;
 
-    // 2. 逆向施加徑向畸變以取樣真實原圖紋理
-    vec2 st = uv_rect - vec2(0.5);
-    vec2 metricSt = vec2(st.x * u_aspect, st.y);
+    // 2. 以未縮放標準視角計算幾何徑向半徑 r2
+    vec2 st_norm = uv_rect - vec2(0.5);
+    float diag = length(vec2(u_aspect, 1.0)) * 0.5;
+    vec2 metricSt = vec2(st_norm.x * u_aspect, st_norm.y) / diag;
     float r2 = dot(metricSt, metricSt);
 
-    vec2 distortedSt = st / (1.0 + u_k1 * r2);
+    // 3. 避免分母 <= 0 產生反摺鏡像或破圖
+    float denom = 1.0 + u_k1 * r2;
+    if (denom <= 0.01) {
+      gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+      return;
+    }
+
+    // 4. 套用防裁切 scale 進行逆向去畸變
+    vec2 st = st_norm * u_fovScale;
+    vec2 distortedSt = st / denom;
     vec2 uv = distortedSt + vec2(0.5);
 
-    // 超出邊界補黑邊
+    // 5. 超出原圖邊界處填黑邊
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
       gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
     } else {
@@ -54,6 +66,15 @@ const fsSource = `
     }
   }
 `;
+
+function getDistortionFovScale(k1, aspect) {
+  if (k1 > 0) {
+    return 1.0 + k1;
+  } else {
+    return 1.0;
+  }
+}
+
 
 function createShader(glContext, type, source) {
   const shader = glContext.createShader(type);
@@ -118,6 +139,7 @@ export function initDistortionRenderer(width, height) {
   k1UniformLocation = gl.getUniformLocation(program, 'u_k1');
   aspectUniformLocation = gl.getUniformLocation(program, 'u_aspect');
   homographyUniformLocation = gl.getUniformLocation(program, 'u_homography');
+  fovScaleUniformLocation = gl.getUniformLocation(program, 'u_fovScale'); // ★ 補上註冊
   return true;
 }
 
@@ -137,12 +159,15 @@ export function renderDistortedVideo(videoElement, targetCtx, k1 = 0) {
       gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
     }
 
+    const aspect = videoElement.videoWidth / videoElement.videoHeight;
+    const fovScale = getDistortionFovScale(k1, aspect);
+
     gl.useProgram(program);
     gl.uniform1f(k1UniformLocation, k1);
-    gl.uniform1f(aspectUniformLocation, videoElement.videoWidth / videoElement.videoHeight);
+    gl.uniform1f(aspectUniformLocation, aspect);
+    gl.uniform1f(fovScaleUniformLocation, fovScale); // ★ 傳入 fovScale，解除全黑/坍縮問題
     
     const h = currentHomography;
-    // WebGL uniformMatrix3fv 為 Column-Major，以轉置傳入 Row-Major 陣列
     gl.uniformMatrix3fv(
       homographyUniformLocation,
       false,

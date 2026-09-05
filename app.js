@@ -1,7 +1,7 @@
 // app.js
-import {resetCalibration, addCalibrationPoint, getPxPerMeter, getCalibrationPoints, transformCoordinates, autoCalculateK1, calculateHomographyFrom4Points} from './standard.js';
+import {resetCalibration, addCalibrationPoint, getPxPerMeter, getCalibrationPoints, transformCoordinates, autoCalculateK1, calculateHomographyFrom4Points, calculateHomographyFrom8Points} from './standard.js';
 import {resetTrackState, addTargetPoint, getAllTargets, getActiveTarget, setActiveTargetId,removeTarget, setTargetCenter, setSearchRadius, updateTemplatePatch, hitTestHandles, drawAllGizmos, runAutoTrack, seekTo} from './track.js';
-import {initChart, clearChart, renderChart} from './chart.js';
+import { initChart, clearChart, renderChart, renderAngleChart } from './chart.js';
 import {exportCSV } from './export.js';
 import {initZoomPan, resetZoomPan} from './zoomPan.js';
 import {initDistortionRenderer, renderDistortedVideo, setHomographyMatrix } from './distortion.js';
@@ -36,12 +36,26 @@ const UI_UPDATE_INTERVAL = 1000 / 30;
 const CHART_UPDATE_INTERVAL = 1000 / 10;
 let lastUIUpdateTime = 0;
 let lastChartUpdateTime = 0;
-let currentChartFilter = 'all'; // 'all' 或特定的 targetId
+let currentTargetFilter = 'all'; // 'all' 或質點 id
+let currentAngleFilter = 'all';  // 'all' 或角度 id
 
 let pendingLineP1 = null;    // 連線模式：暫存第 1 個點
 let pendingAngleLine1 = null; // 夾角模式：暫存第 1 條線
+let pendingAngleLine2 = null;
 
 let timeSlider, timeDisplay, btnPlayPause, btnPrevFrame, btnNextFrame;
+
+let perspective8Points = [];
+const LINE8_DESCS = [
+  '第 1 條「鉛直線」起點 (1/8)',
+  '第 1 條「鉛直線」終點 (2/8)',
+  '第 2 條「鉛直線」起點 (3/8)',
+  '第 2 條「鉛直線」終點 (4/8)',
+  '第 1 條「水平線」起點 (5/8)',
+  '第 1 條「水平線」終點 (6/8)',
+  '第 2 條「水平線」起點 (7/8)',
+  '第 2 條「水平線」終點 (8/8)'
+];
 
 window.onload = () => {
   video = document.getElementById('videoElement');
@@ -54,9 +68,12 @@ window.onload = () => {
   btnPrevFrame = document.getElementById('btnPrevFrame');
   btnNextFrame = document.getElementById('btnNextFrame');
 
+  // 統一在此完整初始化三組示波器 (X / Y / Angle)
   const chartX = document.getElementById('chartCanvasX');
   const chartY = document.getElementById('chartCanvasY');
-  if (chartX && chartY) initChart(chartX, chartY);
+  const chartAngle = document.getElementById('chartCanvasAngle');
+  if (chartX && chartY) initChart(chartX, chartY, chartAngle);
+
   initZoomPan(canvas);
 
   document.getElementById('videoInput').addEventListener('change', handleVideoUpload);
@@ -86,7 +103,7 @@ window.onload = () => {
     if (resolveTargetCorrection) {
       document.getElementById('lostTargetBar').style.display = 'none';
       mode = 'idle';
-      resolveTargetCorrection('continue'); // 保留上一幀位置繼續
+      resolveTargetCorrection('continue');
       resolveTargetCorrection = null;
     }
   });
@@ -97,6 +114,49 @@ window.onload = () => {
       mode = 'idle';
       resolveTargetCorrection('abort');
       resolveTargetCorrection = null;
+    }
+  });
+
+  // --- 徑向畸變 k1 滑桿監聽 ---
+  const k1Slider = document.getElementById('k1Distortion');
+  const k1Value = document.getElementById('k1Value');
+  k1Slider?.addEventListener('input', (e) => {
+    const val = parseFloat(e.target.value);
+    if (k1Value) k1Value.innerText = val.toFixed(3);
+    // 即時更新畫布畫面與幾何標註
+    renderCurrentFrame(true);
+    redrawActiveGizmo();
+  });
+
+  // --- 水平補償角 tiltAngle 監聽 ---
+  const tiltInput = document.getElementById('tiltAngle');
+  tiltInput?.addEventListener('input', () => {
+    renderCurrentFrame(true);
+    redrawActiveGizmo();
+
+    // 若已有追蹤軌跡，同步重新計算各點物理座標並重繪圖表
+    const targets = getAllTargets();
+    const tiltAngle = parseFloat(tiltInput.value) || 0;
+    const calPoints = getCalibrationPoints();
+    const origin = calPoints[0] || { x: 0, y: canvas.height };
+
+    targets.forEach(t => {
+      t.trajectory.forEach(pt => {
+        const trans = transformCoordinates(pt.cx, pt.cy, {
+          imageWidth: canvas.width,
+          imageHeight: canvas.height,
+          tiltAngleDeg: tiltAngle,
+          originX: origin.x,
+          originY: origin.y,
+          isAlreadyRectified: true
+        });
+        pt.x_m = trans.x_m.toFixed(4);
+        pt.y_m = trans.y_m.toFixed(4);
+      });
+    });
+
+    if (targets.some(t => t.trajectory.length > 0)) {
+      renderChart(targets, currentTargetFilter);
     }
   });
 
@@ -121,23 +181,36 @@ window.onload = () => {
     document.getElementById('status').innerText = `【k1 畸變校正】請點擊同一直線上 ${K1_TARGET_POINTS} 個點 (0/${K1_TARGET_POINTS})`;
   });
 
+  document.getElementById('btnAutoPerspective8')?.addEventListener('click', () => {
+    mode = 'select8Point';
+    perspective8Points = [];
+    currentHomography = [1,0,0, 0,1,0, 0,0,1];
+    setHomographyMatrix(currentHomography);
+    renderCurrentFrame(true);
+    document.getElementById('status').innerText = `【直立平面校正】請點選已知垂直地面的 ${LINE8_DESCS[0]}`;
+  });
+
   // 多追蹤點按鈕事件
   document.getElementById('btnTrack').addEventListener('click', () => {
     mode = 'selectTarget';
     document.getElementById('status').innerText = '【新增追蹤點】請直接在畫布上點選欲追蹤的目標中心（可連續點選加入多點）';
   });
 
+  // 合併監聽器：確認後連同幾何狀態與圖表一併清空
   document.getElementById('btnClearTargets')?.addEventListener('click', () => {
-    if (confirm('確定要清除所有追蹤點嗎？')) {
+    if (confirm('確定要清除所有追蹤點與幾何連線嗎？')) {
       resetTrackState();
+      resetGeometryState();
       renderCurrentFrame(true);
       updateTargetListUI();
       updateChartFilterUI();
+      clearChart();
       document.getElementById('btnProcess').disabled = true;
-      document.getElementById('status').innerText = '已清除所有追蹤目標';
+      document.getElementById('status').innerText = '已清除所有追蹤目標與幾何標註';
     }
   });
-  // === 幾何工具按鈕事件 ===
+
+  // 幾何工具按鈕事件
   document.getElementById('btnCreateLine')?.addEventListener('click', () => {
     mode = 'createLine';
     pendingLineP1 = null;
@@ -153,11 +226,6 @@ window.onload = () => {
     mode = 'createAngle';
     pendingAngleLine1 = null;
     document.getElementById('status').innerText = '【建立夾角】步驟 1：請在畫面上點選「第 1 條線」';
-  });
-  
-  // 清除點位時，連同線條與角度一併重設
-  document.getElementById('btnClearTargets')?.addEventListener('click', () => {
-    resetGeometryState();
   });
 
   document.getElementById('btnProcess').addEventListener('click', handleTrackButtonAction);
@@ -354,6 +422,7 @@ function handleCanvasClick(e) {
 
   const { x, y } = getCanvasCoords(e);
   if (x < 0 || x > canvas.width || y < 0 || y > canvas.height) return;
+
   if (mode === 'createLine') {
     const hitTarget = findTargetAt(x, y);
 
@@ -366,11 +435,9 @@ function handleCanvasClick(e) {
       document.getElementById('status').innerText = `已選中起點 [${hitTarget.name}]。請點「第二個追蹤點」或「畫布空白處」自動建立鉛直/水平參考線`;
     } else {
       if (hitTarget && hitTarget.id !== pendingLineP1.id) {
-        // 選了第二個追蹤點 -> 兩點連線
         const res = addLine(pendingLineP1, hitTarget);
         document.getElementById('status').innerText = res.message;
       } else if (!hitTarget) {
-        // 點擊畫面空白處 -> 自動依偏移判斷鉛直/水平線
         const res = addLine(pendingLineP1, null, { x, y });
         document.getElementById('status').innerText = res.message;
       }
@@ -380,30 +447,40 @@ function handleCanvasClick(e) {
     }
     return;
   }
+
   if (mode === 'createAngle') {
     const targetsMap = {};
     getAllTargets().forEach(t => { targetsMap[t.id] = t; });
     const clickedLine = hitTestLine(x, y, targetsMap);
 
-    if (!clickedLine) {
-      document.getElementById('status').innerText = '未點中線段，請靠近線條點擊！';
+    if (!pendingAngleLine1) {
+      if (!clickedLine) {
+        document.getElementById('status').innerText = '未點中線段，請靠近第 1 條線點擊！';
+        return;
+      }
+      pendingAngleLine1 = clickedLine;
+      document.getElementById('status').innerText = `已選中 [${clickedLine.name}]，請點選「第 2 條線」`;
       return;
     }
 
-    if (!pendingAngleLine1) {
-      pendingAngleLine1 = clickedLine;
-      document.getElementById('status').innerText = `已選中第 1 條線 [${clickedLine.name}]，請點選「第 2 條線」`;
-    } else {
-      if (clickedLine.id === pendingAngleLine1.id) {
-        document.getElementById('status').innerText = '不可選擇同一條線段，請選另一條！';
+    if (!pendingAngleLine2) {
+      if (!clickedLine || clickedLine.id === pendingAngleLine1.id) {
+        document.getElementById('status').innerText = '請點選與第 1 條不同的「第 2 條線」！';
         return;
       }
-      const res = addAngle(pendingAngleLine1, clickedLine);
-      document.getElementById('status').innerText = res.message;
-      pendingAngleLine1 = null;
-      mode = 'idle';
-      redrawActiveGizmo();
+      pendingAngleLine2 = clickedLine;
+      document.getElementById('status').innerText = `已選中兩線！請點選「該角欲量測的一側空白處」（小角側或大角側）`;
+      return;
     }
+
+    const res = addAngle(pendingAngleLine1, pendingAngleLine2, { x, y }, targetsMap);
+    document.getElementById('status').innerText = res.message;
+
+    pendingAngleLine1 = null;
+    pendingAngleLine2 = null;
+    mode = 'idle';
+    updateChartFilterUI();
+    redrawActiveGizmo();
     return;
   }
 
@@ -425,8 +502,57 @@ function handleCanvasClick(e) {
     updateChartFilterUI();
   } else if (mode === 'select4Point') {
     handle4PointClick(x, y);
+  } else if (mode === 'select8Point') {
+    handle8PointClick(x, y);
   } else if (mode === 'selectK1Line') {
     handleK1LineClick(x, y);
+  }
+}
+
+function handle8PointClick(x, y) {
+  perspective8Points.push({ x, y });
+  const count = perspective8Points.length;
+
+  // 鉛直組使用綠色 (#22c55e)，水平組使用藍色 (#38bdf8)
+  const isVerticalGroup = count <= 4;
+  const strokeColor = isVerticalGroup ? '#22c55e' : '#38bdf8';
+
+  drawDot(x, y, strokeColor);
+
+  // 兩兩成線時，繪製對應線段並標註類別
+  if (count % 2 === 0) {
+    const pPrev = perspective8Points[count - 2];
+    ctx.save();
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(pPrev.x, pPrev.y);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+
+    const tagText = isVerticalGroup ? `鉛直線 ${count / 2}` : `水平線 ${(count - 4) / 2}`;
+    ctx.fillStyle = strokeColor;
+    ctx.font = '11px monospace';
+    ctx.fillText(tagText, (pPrev.x + x) / 2 + 5, (pPrev.y + y) / 2 - 5);
+    ctx.restore();
+  }
+
+  if (count < 8) {
+    document.getElementById('status').innerText = `【直立平面校正】請點選 ${LINE8_DESCS[count]}`;
+  } else {
+    try {
+      const result = calculateHomographyFrom8Points(perspective8Points, canvas.width, canvas.height);
+      currentHomography = result.homography;
+      setHomographyMatrix(currentHomography);
+      renderCurrentFrame(true);
+      document.getElementById('status').innerText = '直立平面視角轉正成功！請點擊「尺規定標」標定實體長度。';
+    } catch (err) {
+      console.error(err);
+      alert(`校正計算失敗: ${err.message}`);
+      renderCurrentFrame(true);
+    }
+    mode = 'idle';
+    perspective8Points = [];
   }
 }
 
@@ -511,10 +637,29 @@ function handleTrackingFrameUpdate(frameData, allTargets) {
     }
   }
 
+  // 角度資料計算
+  const lines = getAllLines();
+  const angles = getAllAngles();
+  const targetsAtFrame = {};
+  allTargets.forEach(t => { targetsAtFrame[t.id] = t; });
+
+  angles.forEach(a => {
+    const l1 = lines.find(l => l.id === a.line1Id);
+    const l2 = lines.find(l => l.id === a.line2Id);
+    if (l1 && l2) {
+      const deg = calculateAngleBetweenLines(l1, l2, targetsAtFrame, a);
+      a.history.push({ time: parseFloat(frameData.time), deg: deg || 0 });
+    }
+  });
+
+  // ★ 帶入 currentAngleFilter，只繪製角度
+  renderAngleChart(angles, currentAngleFilter);
+
+  // ★ 帶入 currentTargetFilter，只繪製質點，不再衝突
   if (now - lastChartUpdateTime >= CHART_UPDATE_INTERVAL) {
     lastChartUpdateTime = now;
     if (allTargets.length > 0) {
-      renderChart(allTargets, currentChartFilter);
+      renderChart(allTargets, currentTargetFilter);
     }
   }
 }
@@ -659,8 +804,12 @@ async function startAutoTrack() {
     targets.forEach(t => {
       t.trajectory = t.trajectory.filter(d => parseFloat(d.time) < currentSeekTime - 0.001);
     });
+    getAllAngles().forEach(a => {
+      a.history = (a.history || []).filter(d => parseFloat(d.time) < currentSeekTime - 0.001);
+    });
   } else {
     targets.forEach(t => { t.trajectory = []; });
+    getAllAngles().forEach(a => { a.history = []; });
   }
 
   isTracking = true;
@@ -729,7 +878,8 @@ async function startAutoTrack() {
     if (active && active.trajectory.length) {
       updateTrackingUI(active.trajectory[active.trajectory.length - 1], active.trajectory);
       // ★ 修復：追蹤完成後直接繪製最新圖表，移除不存在的 now 判斷
-      renderChart(getAllTargets(), currentChartFilter);
+      renderChart(getAllTargets(), currentTargetFilter);
+      renderAngleChart(getAllAngles(), currentAngleFilter);
       
       const totalElapsedSec = (performance.now() - trackStartTime) / 1000;
       const avgFPS = (active.trajectory.length / totalElapsedSec).toFixed(1);
@@ -1066,54 +1216,74 @@ function drawGrid(ctx, width, height, baseStep = 50, tiltAngleDeg = 0, origin = 
   ctx.restore();
 }
 
-// 動態更新圖表切換按鈕清單 (當新增或刪除目標點時調用)
+// 動態更新圖表切換按鈕清單
 export function updateChartFilterUI() {
   const container = document.getElementById('chartFilterPills');
   if (!container) return;
 
   const targets = getAllTargets();
-
-  // 若當前選定的目標已被刪除，重設回 'all'
-  if (currentChartFilter !== 'all' && !targets.some(t => t.id === currentChartFilter)) {
-    currentChartFilter = 'all';
-  }
+  const angles = getAllAngles();
 
   let html = `
-    <button class="pill-btn ${currentChartFilter === 'all' ? 'active' : ''}" data-target-id="all">
-      <span class="pill-badge-all">ALL</span> 全部疊加對比
-    </button>
+    <!-- 質點分組 -->
+    <div class="filter-cluster">
+      <span class="cluster-label">質點 (X/Y):</span>
+      <button class="pill-btn ${currentTargetFilter === 'all' ? 'active' : ''}" data-cluster="target" data-id="all">
+        <span class="pill-badge-all">ALL</span> 全部疊加
+      </button>
   `;
 
   targets.forEach(t => {
-    const isActive = (currentChartFilter === t.id);
+    const isActive = (currentTargetFilter === t.id);
     html += `
-      <button class="pill-btn ${isActive ? 'active' : ''}" data-target-id="${t.id}">
+      <button class="pill-btn ${isActive ? 'active' : ''}" data-cluster="target" data-id="${t.id}">
         <span class="chip-color" style="background: ${t.color}"></span>
         ${t.name}
       </button>
     `;
   });
+  html += `</div>`;
+
+  // 若有建立夾角，顯示夾角分組
+  if (angles.length > 0) {
+    html += `
+      <div class="filter-divider"></div>
+      <div class="filter-cluster">
+        <span class="cluster-label">夾角 (θ):</span>
+        <button class="pill-btn ${currentAngleFilter === 'all' ? 'active' : ''}" data-cluster="angle" data-id="all">
+          <span class="pill-badge-angle">ALL</span> 全部疊加
+        </button>
+    `;
+
+    angles.forEach(a => {
+      const isActive = (currentAngleFilter === a.id);
+      html += `
+        <button class="pill-btn ${isActive ? 'active' : ''}" data-cluster="angle" data-id="${a.id}" style="border-color: ${a.color || '#a855f7'}">
+          <span class="chip-color" style="background: ${a.color || '#a855f7'}"></span>
+          <span class="pill-badge-angle">θ</span>
+          <span>${a.name}</span>
+        </button>
+      `;
+    });
+    html += `</div>`;
+  }
 
   container.innerHTML = html;
 
-  // 綁定點擊切換事件
+  // 綁定獨立分組切換
   container.querySelectorAll('.pill-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      currentChartFilter = btn.getAttribute('data-target-id');
-      updateChartFilterUI();
-      renderChart(getAllTargets(), currentChartFilter);
+      const cluster = btn.getAttribute('data-cluster');
+      const id = btn.getAttribute('data-id');
 
-      // 同步通道指示字樣
-      const labelX = document.getElementById('chartLabelX');
-      const labelY = document.getElementById('chartLabelY');
-      if (currentChartFilter === 'all') {
-        if (labelX) labelX.innerText = 'CH-1: X (全部疊加)';
-        if (labelY) labelY.innerText = 'CH-2: Y (全部疊加)';
-      } else {
-        const found = targets.find(t => t.id === currentChartFilter);
-        const name = found ? found.name : '';
-        if (labelX) labelX.innerText = `CH-1: X (${name})`;
-        if (labelY) labelY.innerText = `CH-2: Y (${name})`;
+      if (cluster === 'target') {
+        currentTargetFilter = id;
+        updateChartFilterUI();
+        renderChart(getAllTargets(), currentTargetFilter);
+      } else if (cluster === 'angle') {
+        currentAngleFilter = id;
+        updateChartFilterUI();
+        renderAngleChart(getAllAngles(), currentAngleFilter);
       }
     });
   });

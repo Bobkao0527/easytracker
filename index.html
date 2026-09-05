@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>KineticTrack Pro | 多點運動力學視訊追蹤與幾何量測工作站</title>
+  <title>EasyTracker | 多質點運動追蹤工作站</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -17,7 +17,7 @@
           <path d="M12 3v18M3 12h18"></path>
           <circle cx="12" cy="12" r="3" fill="currentColor"></circle>
         </svg>
-        <span class="brand-name">KineticTrack Studio <span class="brand-ver">v2.5 MultiTrack Pro</span></span>
+        <span class="brand-name">EasyTracker <span class="brand-ver">v1.0 </span></span>
       </div>
       <div class="sys-status-wrapper">
         <span class="status-indicator"></span>
@@ -195,8 +195,9 @@
             </div>
             
             <div class="multi-btn-row">
-              <button id="btnAutoK1" class="btn btn-secondary btn-xs">k1 畸變求解 (6點)</button>
-              <button id="btnAutoPerspective" class="btn btn-accent-dark btn-xs">矩形透視校正 (4點)</button>
+              <button id="btnAutoK1" class="btn btn-secondary btn-xs">k1 畸變校正 (6點)</button>
+              <button id="btnAutoPerspective" class="btn btn-accent-dark btn-xs">水平矩形透視校正 (4點)</button>
+              <button id="btnAutoPerspective8" class="btn btn-accent-dark btn-xs">直立雙平行透視校正 (8點)</button>
             </div>
           </div>
 
@@ -221,7 +222,7 @@
         <div class="charts-subgrid">
           <div class="chart-box">
             <div class="chart-tab-header">
-              <span class="chart-tab-title">X-AXIS DISPLACEMENT (m) vs TIME (s)</span>
+              <span class="chart-tab-title">X(m) - t(s)</span>
               <span class="channel-indicator ch-x" id="chartLabelX">CH-1: X</span>
             </div>
             <div class="chart-body" id="chartContainerX">
@@ -231,11 +232,20 @@
 
           <div class="chart-box">
             <div class="chart-tab-header">
-              <span class="chart-tab-title">Y-AXIS DISPLACEMENT (m) vs TIME (s)</span>
+              <span class="chart-tab-title">Y(m) - t(s)</span>
               <span class="channel-indicator ch-y" id="chartLabelY">CH-2: Y</span>
             </div>
             <div class="chart-body" id="chartContainerY">
               <canvas id="chartCanvasY"></canvas>
+            </div>
+          </div>
+          <div class="chart-box" id="chartBoxAngle">
+            <div class="chart-tab-header">
+              <span class="chart-tab-title">ANGLE θ (deg) vs TIME (s)</span>
+              <span class="channel-indicator ch-angle" id="chartLabelAngle" style="background: rgba(168,85,247,0.15); color: #c084fc; border: 1px solid #a855f7;">CH-3: θ</span>
+            </div>
+            <div class="chart-body" id="chartContainerAngle">
+              <canvas id="chartCanvasAngle"></canvas>
             </div>
           </div>
         </div>

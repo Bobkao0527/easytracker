@@ -62,20 +62,62 @@ export function addLine(p1Target, p2Target = null, freePoint = null) {
 }
 
 /**
- * 建立兩線段的夾角
+ * 建立夾角：包含線1、線2，以及使用者點擊的側向參考點 (sidePoint)
  */
-export function addAngle(line1, line2) {
+export function addAngle(line1, line2, sidePoint = null, targetsMap = {}) {
   const id = `angle_${Date.now()}_${angles.length + 1}`;
   const name = `θ${angles.length + 1}`;
+
+  // 傳入 targetsMap 正確計算幾何側向
+  const isMajor = sidePoint ? checkIsMajorAngle(line1, line2, sidePoint, targetsMap) : false;
+
   const angle = {
     id,
     name,
     line1Id: line1.id,
     line2Id: line2.id,
-    color: '#ec4899'
+    sidePoint,
+    isMajor,
+    color: '#ec4899',
+    history: []
   };
+
   angles.push(angle);
-  return { angle, message: `已建立夾角 [${name}]: ${line1.name} 與 ${line2.name} 之夾角` };
+  const typeText = isMajor ? '優角(大角)' : '劣角(小角)';
+  return { angle, message: `已建立夾角 [${name}]: ${line1.name} 與 ${line2.name} 的 ${typeText}` };
+}
+
+/**
+ * 計算兩向量交點 (若無實體交點則取 L1 起點作為頂點)
+ */
+export function getAngleVertex(seg1, seg2) {
+  const eps = 6;
+  if (Math.hypot(seg1.start.x - seg2.start.x, seg1.start.y - seg2.start.y) < eps) return seg1.start;
+  if (Math.hypot(seg1.end.x - seg2.start.x, seg1.end.y - seg2.start.y) < eps) return seg1.end;
+  if (Math.hypot(seg1.start.x - seg2.end.x, seg1.start.y - seg2.end.y) < eps) return seg1.start;
+  if (Math.hypot(seg1.end.x - seg2.end.x, seg1.end.y - seg2.end.y) < eps) return seg1.end;
+  return seg1.start;
+}
+
+/**
+ * 利用角平分線判斷點擊點是否在大角（優角）側
+ */
+function checkIsMajorAngle(line1, line2, clickPt, targetsMap = {}) {
+  const seg1 = getLineEndpoints(line1, targetsMap);
+  const seg2 = getLineEndpoints(line2, targetsMap);
+  if (!seg1 || !seg2) return false;
+
+  const { vertex: v, v1, v2 } = getRayVectors(seg1, seg2);
+  const len1 = Math.hypot(v1.x, v1.y) || 1;
+  const len2 = Math.hypot(v2.x, v2.y) || 1;
+
+  // 修復：u1.y 應除以 len1，求出正確角平分線
+  const u1 = { x: v1.x / len1, y: v1.y / len1 };
+  const u2 = { x: v2.x / len2, y: v2.y / len2 };
+  const bisector = { x: u1.x + u2.x, y: u1.y + u2.y };
+
+  const vClick = { x: clickPt.x - v.x, y: clickPt.y - v.y };
+  return (bisector.x * vClick.x + bisector.y * vClick.y) < 0;
 }
 
 /**
@@ -102,25 +144,29 @@ export function getLineEndpoints(line, targetsMap) {
 }
 
 /**
- * 計算兩向量夾角 (單位: 度 0° ~ 180°)
+ * 使用 2D 外積計算有向角度（支援正負旋轉方向）
+ * 定義：從 line1 旋轉到 line2 的角度
+ * @returns {number} 角度 (度，範圍 -180° ~ +180°)
  */
-export function calculateAngleBetweenLines(line1, line2, targetsMap) {
+export function calculateAngleBetweenLines(line1, line2, targetsMap, angleConfig = null) {
   const seg1 = getLineEndpoints(line1, targetsMap);
   const seg2 = getLineEndpoints(line2, targetsMap);
   if (!seg1 || !seg2) return null;
 
-  const v1 = { x: seg1.end.x - seg1.start.x, y: seg1.end.y - seg1.start.y };
-  const v2 = { x: seg2.end.x - seg2.start.x, y: seg2.end.y - seg2.start.y };
+  const { v1, v2 } = getRayVectors(seg1, seg2);
 
-  const mag1 = Math.hypot(v1.x, v1.y);
-  const mag2 = Math.hypot(v2.x, v2.y);
-  if (mag1 < 1e-4 || mag2 < 1e-4) return 0;
-
+  const cross = v1.x * v2.y - v1.y * v2.x;
   const dot = v1.x * v2.x + v1.y * v2.y;
-  let cosTheta = dot / (mag1 * mag2);
-  cosTheta = Math.max(-1, Math.min(1, cosTheta)); // 數值截斷防溢位
 
-  return (Math.acos(cosTheta) * 180) / Math.PI;
+  // 注意：在 Canvas 座標系下 (Y向下)，cross > 0 代表順時針，cross < 0 代表逆時針
+  let deg = (Math.atan2(cross, dot) * 180) / Math.PI;
+
+  // 2. 如果使用者指定測量「優角」(大角)
+  if (angleConfig && angleConfig.isMajor) {
+    deg = deg > 0 ? (360 - deg) : (-360 - deg);
+  }
+
+  return deg;
 }
 
 /**
@@ -149,7 +195,22 @@ function pointToSegmentDistance(px, py, x1, y1, x2, y2) {
 }
 
 /**
- * 繪製所有線段與夾角 Gizmo (含弧線與即時度數標籤)
+ * 取得自共用頂點發散的兩條射線向量
+ */
+function getRayVectors(seg1, seg2) {
+  const v = getAngleVertex(seg1, seg2);
+  const eps = 6;
+  const p1Other = Math.hypot(seg1.start.x - v.x, seg1.start.y - v.y) < eps ? seg1.end : seg1.start;
+  const p2Other = Math.hypot(seg2.start.x - v.x, seg2.start.y - v.y) < eps ? seg2.end : seg2.start;
+  return {
+    vertex: v,
+    v1: { x: p1Other.x - v.x, y: p1Other.y - v.y },
+    v2: { x: p2Other.x - v.x, y: p2Other.y - v.y }
+  };
+}
+
+/**
+ * 繪製幾何 Gizmo
  */
 export function drawGeometryGizmos(ctx, targets, pxPerMeter = 0) {
   const targetsMap = {};
@@ -164,14 +225,13 @@ export function drawGeometryGizmos(ctx, targets, pxPerMeter = 0) {
     ctx.strokeStyle = line.color;
     ctx.lineWidth = 2;
     if (line.type === 'axis_ref') {
-      ctx.setLineDash([6, 4]); // 參考軸線用虛線表示
+      ctx.setLineDash([6, 4]);
     }
     ctx.beginPath();
     ctx.moveTo(seg.start.x, seg.start.y);
     ctx.lineTo(seg.end.x, seg.end.y);
     ctx.stroke();
 
-    // 繪製線段標籤及物理長度 (公尺或像素)
     const midX = (seg.start.x + seg.end.x) / 2;
     const midY = (seg.start.y + seg.end.y) / 2;
     const pixelLen = Math.hypot(seg.end.x - seg.start.x, seg.end.y - seg.start.y);
@@ -193,34 +253,31 @@ export function drawGeometryGizmos(ctx, targets, pxPerMeter = 0) {
     const seg2 = getLineEndpoints(l2, targetsMap);
     if (!seg1 || !seg2) return;
 
-    const deg = calculateAngleBetweenLines(l1, l2, targetsMap);
+    const deg = calculateAngleBetweenLines(l1, l2, targetsMap, angle);
     if (deg === null) return;
 
-    // 找出兩條線的交點（共頂點），若無共點則以 L1 的起點作為繪製基準
-    let vertex = seg1.start;
-    if (Math.hypot(seg1.start.x - seg2.start.x, seg1.start.y - seg2.start.y) < 5) {
-      vertex = seg1.start;
-    } else if (Math.hypot(seg1.end.x - seg2.start.x, seg1.end.y - seg2.start.y) < 5) {
-      vertex = seg1.end;
-    }
-
-    const a1 = Math.atan2(seg1.end.y - seg1.start.y, seg1.end.x - seg1.start.x);
-    const a2 = Math.atan2(seg2.end.y - seg2.start.y, seg2.end.x - seg2.start.x);
+    const { vertex, v1, v2 } = getRayVectors(seg1, seg2);
+    const a1 = Math.atan2(v1.y, v1.x);
+    const a2 = Math.atan2(v2.y, v2.x);
 
     ctx.save();
     ctx.strokeStyle = angle.color;
     ctx.fillStyle = angle.color;
-    ctx.lineWidth = 1.8;
+    ctx.lineWidth = 2;
 
-    // 繪製角弧度
+    let diff = a2 - a1;
+    while (diff < 0) diff += Math.PI * 2;
+    while (diff >= Math.PI * 2) diff -= Math.PI * 2;
+
+    const isCcw = angle.isMajor ? (diff < Math.PI) : (diff >= Math.PI);
+
     ctx.beginPath();
-    ctx.arc(vertex.x, vertex.y, 24, Math.min(a1, a2), Math.max(a1, a2));
+    ctx.arc(vertex.x, vertex.y, 28, a1, a2, isCcw);
     ctx.stroke();
 
-    // 標示角度數值文字
-    const midAngle = (a1 + a2) / 2;
-    const textX = vertex.x + Math.cos(midAngle) * 38;
-    const textY = vertex.y + Math.sin(midAngle) * 38;
+    let midAngle = !isCcw ? (a1 + diff / 2) : (a1 - (Math.PI * 2 - diff) / 2);
+    const textX = vertex.x + Math.cos(midAngle) * 45;
+    const textY = vertex.y + Math.sin(midAngle) * 45;
 
     ctx.font = 'bold 13px monospace';
     ctx.fillText(`${angle.name}: ${deg.toFixed(1)}°`, textX, textY);
