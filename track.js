@@ -1,7 +1,7 @@
 // track.js
+import { drawGeometryGizmos } from './geometry.js';
 let targets = []; // 存儲所有追蹤目標物件
 let activeTargetId = null;
-let defaultTemplateSize = 32;
 let defaultSearchRadius = 60;
 
 export const TARGET_COLORS = [
@@ -38,21 +38,11 @@ export function removeTarget(id) {
   }
 }
 
-export function getSearchRadius() {
-  const active = getActiveTarget();
-  return active ? active.searchRadius : defaultSearchRadius;
-}
-
 export function setSearchRadius(radius) {
   const active = getActiveTarget();
   const r = Math.max(10, Math.round(radius));
   if (active) active.searchRadius = r;
   defaultSearchRadius = r;
-}
-
-export function getTemplateSize() {
-  const active = getActiveTarget();
-  return active ? active.templateSize : defaultTemplateSize;
 }
 
 export function getTargetCenter() {
@@ -513,6 +503,7 @@ export async function runAutoTrack({
     // 重新繪製含疊加 Gizmo 標註
     if (typeof renderFrame === 'function') renderFrame(true);
     drawAllGizmos(ctx, null, false);
+    drawGeometryGizmos(ctx, targets, pxPerMeter);
 
     if (onFrameUpdate) onFrameUpdate(currentFrameData, targets);
     frameIdx++;

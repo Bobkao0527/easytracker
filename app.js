@@ -1,14 +1,11 @@
 // app.js
 import {resetCalibration, addCalibrationPoint, getPxPerMeter, getCalibrationPoints, transformCoordinates, autoCalculateK1, calculateHomographyFrom4Points} from './standard.js';
-import {
-  resetTrackState, addTargetPoint, getAllTargets, getActiveTarget, setActiveTargetId,
-  removeTarget, setTargetCenter, setSearchRadius, getSearchRadius, getTemplateSize,
-  updateTemplatePatch, hitTestHandles, drawAllGizmos, runAutoTrack, seekTo
-} from './track.js';
+import {resetTrackState, addTargetPoint, getAllTargets, getActiveTarget, setActiveTargetId,removeTarget, setTargetCenter, setSearchRadius, updateTemplatePatch, hitTestHandles, drawAllGizmos, runAutoTrack, seekTo} from './track.js';
 import {initChart, clearChart, renderChart} from './chart.js';
-import { exportCSV } from './export.js';
+import {exportCSV } from './export.js';
 import {initZoomPan, resetZoomPan} from './zoomPan.js';
-import { initDistortionRenderer, renderDistortedVideo, setHomographyMatrix } from './distortion.js';
+import {initDistortionRenderer, renderDistortedVideo, setHomographyMatrix } from './distortion.js';
+import {addLine, addAngle, hitTestLine, drawGeometryGizmos, calculateAngleBetweenLines, getLineEndpoints, getAllLines, getAllAngles, resetGeometryState} from './geometry.js';
 
 let video, canvas, ctx;
 let mode = 'idle'; // 'idle' | 'calibrate' | 'selectTarget' | 'pausedCorrection' | ...
@@ -40,6 +37,9 @@ const CHART_UPDATE_INTERVAL = 1000 / 10;
 let lastUIUpdateTime = 0;
 let lastChartUpdateTime = 0;
 let currentChartFilter = 'all'; // 'all' 或特定的 targetId
+
+let pendingLineP1 = null;    // 連線模式：暫存第 1 個點
+let pendingAngleLine1 = null; // 夾角模式：暫存第 1 條線
 
 let timeSlider, timeDisplay, btnPlayPause, btnPrevFrame, btnNextFrame;
 
@@ -137,6 +137,28 @@ window.onload = () => {
       document.getElementById('status').innerText = '已清除所有追蹤目標';
     }
   });
+  // === 幾何工具按鈕事件 ===
+  document.getElementById('btnCreateLine')?.addEventListener('click', () => {
+    mode = 'createLine';
+    pendingLineP1 = null;
+    document.getElementById('status').innerText = '【建立連線】步驟 1：請在畫面上點選「第 1 個追蹤點」';
+  });
+
+  document.getElementById('btnCreateAngle')?.addEventListener('click', () => {
+    const lines = getAllLines();
+    if (lines.length < 2) {
+      alert('請先建立至少兩條線段！');
+      return;
+    }
+    mode = 'createAngle';
+    pendingAngleLine1 = null;
+    document.getElementById('status').innerText = '【建立夾角】步驟 1：請在畫面上點選「第 1 條線」';
+  });
+  
+  // 清除點位時，連同線條與角度一併重設
+  document.getElementById('btnClearTargets')?.addEventListener('click', () => {
+    resetGeometryState();
+  });
 
   document.getElementById('btnProcess').addEventListener('click', handleTrackButtonAction);
   document.getElementById('btnExport').addEventListener('click', handleExport);
@@ -148,6 +170,17 @@ window.onload = () => {
   canvas.addEventListener('mouseup', handleCanvasMouseUp);
   canvas.addEventListener('click', handleCanvasClick);
 };
+
+function findTargetAt(x, y, radius = 16) {
+  const targets = getAllTargets();
+  for (const t of targets) {
+    if (!t.center) continue;
+    if (Math.hypot(x - t.center.cx, y - t.center.cy) <= radius) {
+      return t;
+    }
+  }
+  return null;
+}
 
 function formatTime(sec) {
   if (isNaN(sec)) return '00:00.00';
@@ -224,6 +257,7 @@ function getCanvasCoords(e) {
 function redrawActiveGizmo() {
   renderCurrentFrame(true);
   drawAllGizmos(ctx, lostTargetObj ? lostTargetObj.id : null, true);
+  drawGeometryGizmos(ctx, getAllTargets(), getPxPerMeter());
 }
 
 function handleCanvasMouseDown(e) {
@@ -320,6 +354,58 @@ function handleCanvasClick(e) {
 
   const { x, y } = getCanvasCoords(e);
   if (x < 0 || x > canvas.width || y < 0 || y > canvas.height) return;
+  if (mode === 'createLine') {
+    const hitTarget = findTargetAt(x, y);
+
+    if (!pendingLineP1) {
+      if (!hitTarget) {
+        document.getElementById('status').innerText = '請先點選一個追蹤點作為起點！';
+        return;
+      }
+      pendingLineP1 = hitTarget;
+      document.getElementById('status').innerText = `已選中起點 [${hitTarget.name}]。請點「第二個追蹤點」或「畫布空白處」自動建立鉛直/水平參考線`;
+    } else {
+      if (hitTarget && hitTarget.id !== pendingLineP1.id) {
+        // 選了第二個追蹤點 -> 兩點連線
+        const res = addLine(pendingLineP1, hitTarget);
+        document.getElementById('status').innerText = res.message;
+      } else if (!hitTarget) {
+        // 點擊畫面空白處 -> 自動依偏移判斷鉛直/水平線
+        const res = addLine(pendingLineP1, null, { x, y });
+        document.getElementById('status').innerText = res.message;
+      }
+      pendingLineP1 = null;
+      mode = 'idle';
+      redrawActiveGizmo();
+    }
+    return;
+  }
+  if (mode === 'createAngle') {
+    const targetsMap = {};
+    getAllTargets().forEach(t => { targetsMap[t.id] = t; });
+    const clickedLine = hitTestLine(x, y, targetsMap);
+
+    if (!clickedLine) {
+      document.getElementById('status').innerText = '未點中線段，請靠近線條點擊！';
+      return;
+    }
+
+    if (!pendingAngleLine1) {
+      pendingAngleLine1 = clickedLine;
+      document.getElementById('status').innerText = `已選中第 1 條線 [${clickedLine.name}]，請點選「第 2 條線」`;
+    } else {
+      if (clickedLine.id === pendingAngleLine1.id) {
+        document.getElementById('status').innerText = '不可選擇同一條線段，請選另一條！';
+        return;
+      }
+      const res = addAngle(pendingAngleLine1, clickedLine);
+      document.getElementById('status').innerText = res.message;
+      pendingAngleLine1 = null;
+      mode = 'idle';
+      redrawActiveGizmo();
+    }
+    return;
+  }
 
   if (mode === 'pausedCorrection') {
     const active = getActiveTarget();
@@ -794,9 +880,12 @@ function handleExport() {
   const tiltAngle = parseFloat(document.getElementById('tiltAngle')?.value) || 0;
   const calPoints = getCalibrationPoints();
   const origin = calPoints[0] || { x: 0, y: canvas.height };
-  const hasScale = getPxPerMeter() > 0;
+  const pxPerMeter = getPxPerMeter();
+  const hasScale = pxPerMeter > 0;
 
-  // 以第 1 個目標點的總影格序列為基準進行寬格式合併
+  const lines = getAllLines();
+  const angles = getAllAngles();
+
   const baseTrajectory = targets[0].trajectory;
   const exportRows = [];
 
@@ -806,10 +895,14 @@ function handleExport() {
       time: baseTrajectory[i].time
     };
 
+    // 1. 各追蹤點座標
+    const targetsAtFrame = {};
     targets.forEach((t) => {
       const pt = t.trajectory[i] || {};
       const cx = pt.cx !== undefined ? pt.cx : 0;
       const cy = pt.cy !== undefined ? pt.cy : 0;
+
+      targetsAtFrame[t.id] = { id: t.id, center: { cx, cy } };
 
       const corrected = transformCoordinates(cx, cy, {
         imageWidth: canvas.width,
@@ -825,6 +918,32 @@ function handleExport() {
       row[`${t.name}_X_px`] = pt.x_px || '0.0';
       row[`${t.name}_Y_px`] = pt.y_px || '0.0';
       row[`${t.name}_Score`] = pt.score || '0.000';
+    });
+
+    // 2. ★ 各線段長度 (物理長度 m 或像素 px)
+    lines.forEach((l) => {
+      const seg = getLineEndpoints(l, targetsAtFrame);
+      if (seg) {
+        const lenPx = Math.hypot(seg.end.x - seg.start.x, seg.end.y - seg.start.y);
+        row[`Line_${l.name}_len_px`] = lenPx.toFixed(1);
+        if (hasScale) {
+          row[`Line_${l.name}_len_m`] = (lenPx / pxPerMeter).toFixed(4);
+        }
+      } else {
+        row[`Line_${l.name}_len_px`] = '0.0';
+      }
+    });
+
+    // 3. ★ 各夾角度數 (度 deg, 0° ~ 180°)
+    angles.forEach((a) => {
+      const l1 = lines.find(l => l.id === a.line1Id);
+      const l2 = lines.find(l => l.id === a.line2Id);
+      if (l1 && l2) {
+        const deg = calculateAngleBetweenLines(l1, l2, targetsAtFrame);
+        row[`Angle_${a.name}_deg`] = deg !== null ? deg.toFixed(2) : '0.00';
+      } else {
+        row[`Angle_${a.name}_deg`] = '0.00';
+      }
     });
 
     exportRows.push(row);
