@@ -122,84 +122,149 @@
       </section>
 
       <!-- 參數與目標檢視器 -->
-      <aside class="panel inspector-panel" aria-label="校正與追蹤設定">
-        <div class="panel-header">
-          <div class="panel-title">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      <aside class="panel inspector-panel" id="inspectorPanel" aria-label="校正與追蹤設定">
+        
+        <!-- 平板直式專用切換頁籤 (僅在直式平板/小螢幕顯示) -->
+        <div class="mobile-tab-bar" id="mobileTabBar">
+          <button class="m-tab-btn active" data-tab="configTab">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             控制台 (CONFIG)
-          </div>
+          </button>
+          <button class="m-tab-btn" data-tab="chartsTab">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            分析圖表 (CHARTS)
+          </button>
         </div>
 
-        <div class="inspector-scroll-content">
+        <div class="panel-header desktop-only-header">
+          <div class="panel-title">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            控制台 (CONFIG)
+          </div>
+          <span class="panel-subtitle">CALIBRATION & TRACKING</span>
+        </div>
+
+        <div class="inspector-scroll-content" id="inspectorScrollContent">
           
-          <!-- ★ 新增：多目標管理面板 -->
-          <div class="config-group">
-            <div class="group-header-flex">
-              <span>追蹤目標點清單 (TARGETS)</span>
-              <button id="btnClearTargets" class="btn-text-danger" title="清空全部追蹤點">清空</button>
-            </div>
-            <div id="targetListContainer" class="target-chip-list">
-              <span class="empty-tip">尚未指定追蹤點，請點擊「Step 2」加入目標</span>
-            </div>
-          </div>
-
-          <!-- 相關度門檻 -->
-          <div class="config-group">
-            <div class="group-header">相關度匹配門檻 (NCC_THRESHOLD)</div>
-            <div class="control-row">
-              <span class="control-label">吻合門檻:</span>
-              <div class="slider-field">
-                <input type="range" id="matchThreshold" min="0.2" max="0.95" step="0.01" value="0.55">
-                <span id="thresholdValue" class="val-badge mono">0.55</span>
+          <!-- 1. 多目標管理模組 -->
+          <details class="config-card" open>
+            <summary class="card-summary">
+              <span class="card-title">
+                <span class="dot-indicator blue"></span>追蹤目標清單 (TARGETS)
+              </span>
+              <button id="btnClearTargets" class="btn-text-danger" title="清空全部追蹤點" onclick="event.stopPropagation()">清空所有</button>
+            </summary>
+            <div class="card-body">
+              <div id="targetListContainer" class="target-chip-list">
+                <span class="empty-tip">尚未指定追蹤點，請點擊「Step 2」加入目標</span>
+              </div>
+              
+              <!-- 匹配門檻整合在目標模組下方 -->
+              <div class="control-row mt-sm">
+                <span class="control-label" title="Normalized Cross Correlation">NCC 吻合門檻</span>
+                <div class="smart-stepper-field">
+                  <button type="button" class="btn-step" data-target="matchThreshold" data-step="-0.05">−</button>
+                  <input type="range" id="matchThreshold" min="0.2" max="0.95" step="0.01" value="0.55" title="雙擊可重設為 0.55">
+                  <button type="button" class="btn-step" data-target="matchThreshold" data-step="0.05">+</button>
+                  <span id="thresholdValue" class="val-badge mono">0.55</span>
+                </div>
               </div>
             </div>
-          </div>
+          </details>
 
-          <!-- 空間尺度定標 -->
-          <div class="config-group">
-            <div class="group-header">空間尺度校正 (SPATIAL_CALIB)</div>
-            <button id="btnCalibrate" class="btn btn-block" disabled>
-              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="12" x2="22" y2="12"/><line x1="6" y1="8" x2="6" y2="16"/><line x1="18" y1="8" x2="18" y2="16"/></svg>
-              尺規定標 (選取兩基準點)
-            </button>
-            <div class="control-row compact-top">
-              <span class="control-label">參考長度:</span>
-              <div class="input-unit-box">
-                <input type="number" id="scaleLength" value="1.0" step="0.1" min="0.01">
-                <span class="unit-tag">m</span>
+          <!-- 2. 空間尺度與角度校正模組 -->
+          <details class="config-card" open>
+            <summary class="card-summary">
+              <span class="card-title">
+                <span class="dot-indicator green"></span>空間尺度與旋轉 (SPATIAL & TILT)
+              </span>
+            </summary>
+            <div class="card-body">
+              <!-- 尺規定標主按鈕 -->
+              <button id="btnCalibrate" class="btn btn-action-calib btn-block" disabled>
+                <div class="calib-btn-inner">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="12" x2="22" y2="12"/><line x1="6" y1="8" x2="6" y2="16"/><line x1="18" y1="8" x2="18" y2="16"/></svg>
+                  <span>啟動尺規定標</span>
+                </div>
+                <span class="calib-badge">選取 2 點</span>
+              </button>
+
+              <div class="control-grid-2col mt-sm">
+                <!-- 參考長度 -->
+                <div class="input-card">
+                  <span class="sub-label">物理參考長度</span>
+                  <div class="input-unit-box">
+                    <input type="number" id="scaleLength" value="1.0" step="0.05" min="0.001">
+                    <span class="unit-tag">m</span>
+                  </div>
+                </div>
+
+                <!-- 座標旋轉角 -->
+                <div class="input-card">
+                  <span class="sub-label">水平軸補償角</span>
+                  <div class="input-unit-box">
+                    <input type="number" id="tiltAngle" value="0" step="0.5">
+                    <span class="unit-tag">° DEG</span>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
+          </details>
 
-          <!-- 座標軸傾角 -->
-          <div class="config-group">
-            <div class="group-header">座標旋轉角 (AXIS_ROTATION)</div>
-            <div class="control-row">
-              <span class="control-label">水平補償角:</span>
-              <div class="input-unit-box">
-                <input type="number" id="tiltAngle" value="0" step="0.5">
-                <span class="unit-tag">° (DEG)</span>
+          <!-- 3. 光學畸變與透視校正模組 -->
+          <details class="config-card" open>
+            <summary class="card-summary">
+              <span class="card-title">
+                <span class="dot-indicator purple"></span>鏡頭畸變與幾何 (OPTICAL CORR)
+              </span>
+            </summary>
+            <div class="card-body">
+              <!-- 徑向係數調整 -->
+              <div class="control-row">
+                <div class="label-with-reset">
+                  <span class="control-label">徑向畸變 k1</span>
+                  <button type="button" class="btn-micro-reset" data-reset="k1Distortion" data-reset-val="0" title="重設為 0">歸零</button>
+                </div>
+                <div class="smart-stepper-field">
+                  <button type="button" class="btn-step" data-target="k1Distortion" data-step="-0.01">−</button>
+                  <input type="range" id="k1Distortion" min="-0.5" max="0.5" step="0.005" value="0" title="雙擊可快速重設為 0.000">
+                  <button type="button" class="btn-step" data-target="k1Distortion" data-step="0.01">+</button>
+                  <span id="k1Value" class="val-badge mono">0.000</span>
+                </div>
               </div>
-            </div>
-          </div>
 
-          <!-- 鏡頭畸變與透視 -->
-          <div class="config-group">
-            <div class="group-header">鏡頭畸變與透視幾何 (OPTICAL_CORR)</div>
-            <div class="control-row">
-              <span class="control-label">徑向係數 k1:</span>
-              <div class="slider-field">
-                <input type="range" id="k1Distortion" min="-0.5" max="0.5" step="0.005" value="0">
-                <span id="k1Value" class="val-badge mono">0.000</span>
+              <!-- 多點輔助透視運算按鈕群 -->
+              <div class="calib-tools-shelf mt-sm">
+                <span class="shelf-label">幾何輔助校正算子：</span>
+                <div class="calib-grid">
+                  <button id="btnAutoK1" class="btn btn-tool-tile">
+                    <span class="tile-icon">🎯</span>
+                    <div class="tile-text">
+                      <strong>k1 畸變校正</strong>
+                      <small>選取直線 6 點</small>
+                    </div>
+                  </button>
+                  
+                  <button id="btnAutoPerspective" class="btn btn-tool-tile">
+                    <span class="tile-icon">⬱</span>
+                    <div class="tile-text">
+                      <strong>水平透視矩形</strong>
+                      <small>平面 4 點正投影</small>
+                    </div>
+                  </button>
+
+                  <button id="btnAutoPerspective8" class="btn btn-tool-tile span-2">
+                    <span class="tile-icon">⏸</span>
+                    <div class="tile-text">
+                      <strong>直立雙平行校正</strong>
+                      <small>雙垂線 8 點透視還原</small>
+                    </div>
+                  </button>
+                </div>
               </div>
+
             </div>
-            
-            <div class="multi-btn-row">
-              <button id="btnAutoK1" class="btn btn-secondary btn-xs">k1 畸變校正 (6點)</button>
-              <button id="btnAutoPerspective" class="btn btn-accent-dark btn-xs">水平矩形透視校正 (4點)</button>
-              <button id="btnAutoPerspective8" class="btn btn-accent-dark btn-xs">直立雙平行透視校正 (8點)</button>
-            </div>
-          </div>
+          </details>
 
         </div>
       </aside>
@@ -281,6 +346,101 @@
 
   </div>
 
+  <!-- 控制台微互動 & 平板切換腳本（放在 body 尾端） -->
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      // 輔助函式：同步更新旁邊的數字徽章
+      const syncBadge = (sliderId, val) => {
+        if (sliderId === 'matchThreshold') {
+          const badge = document.getElementById('thresholdValue');
+          if (badge) badge.textContent = parseFloat(val).toFixed(2);
+        } else if (sliderId === 'k1Distortion') {
+          const badge = document.getElementById('k1Value');
+          if (badge) badge.textContent = parseFloat(val).toFixed(3);
+        }
+      };
+
+      // 1. 步進按鈕 (+ / -)
+      document.querySelectorAll('.btn-step').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          const targetId = btn.getAttribute('data-target');
+          const step = parseFloat(btn.getAttribute('data-step')) || 0.01;
+          const slider = document.getElementById(targetId);
+          
+          if (slider) {
+            let curVal = parseFloat(slider.value) || 0;
+            let minVal = parseFloat(slider.min);
+            let maxVal = parseFloat(slider.max);
+            let nextVal = Math.min(Math.max(curVal + step, minVal), maxVal);
+            
+            slider.value = nextVal;
+            syncBadge(targetId, nextVal);
+
+            // 觸發原生事件通知 app.js
+            slider.dispatchEvent(new Event('input', { bubbles: true }));
+            slider.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        });
+      });
+
+      // 2. 雙擊滑桿重設
+      const k1Slider = document.getElementById('k1Distortion');
+      if (k1Slider) {
+        k1Slider.addEventListener('dblclick', () => {
+          k1Slider.value = 0;
+          syncBadge('k1Distortion', 0);
+          k1Slider.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+      }
+
+      const thresholdSlider = document.getElementById('matchThreshold');
+      if (thresholdSlider) {
+        thresholdSlider.addEventListener('dblclick', () => {
+          thresholdSlider.value = 0.55;
+          syncBadge('matchThreshold', 0.55);
+          thresholdSlider.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+      }
+
+      // 3. 歸零按鈕
+      document.querySelectorAll('.btn-micro-reset').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const targetId = btn.getAttribute('data-reset');
+          const resetVal = btn.getAttribute('data-reset-val') || 0;
+          const el = document.getElementById(targetId);
+          if (el) {
+            el.value = resetVal;
+            syncBadge(targetId, resetVal);
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+        });
+      });
+
+      // 4. 平板直式：分頁切換
+      const tabBtns = document.querySelectorAll('.m-tab-btn');
+      const inspector = document.getElementById('inspectorPanel');
+      const charts = document.querySelector('.charts-panel');
+
+      tabBtns.forEach(tabBtn => {
+        tabBtn.addEventListener('click', () => {
+          tabBtns.forEach(b => b.classList.remove('active'));
+          tabBtn.classList.add('active');
+
+          const targetTab = tabBtn.getAttribute('data-tab');
+          if (targetTab === 'configTab') {
+            if (inspector) inspector.classList.remove('tab-hidden');
+            if (charts) charts.classList.remove('tab-active');
+          } else if (targetTab === 'chartsTab') {
+            if (inspector) inspector.classList.add('tab-hidden');
+            if (charts) charts.classList.add('tab-active');
+          }
+        });
+      });
+    });
+  </script>
+
+  <!-- 原有主應用邏輯模組 -->
   <script type="module" src="app.js"></script>
 </body>
 </html>

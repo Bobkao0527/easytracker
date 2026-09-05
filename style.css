@@ -214,6 +214,129 @@ body {
   height: 28px;
 }
 
+/* 雙欄數值輸入卡片 */
+.control-grid-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.input-card {
+  background: #090d12;
+  border: 1px solid #1c222b;
+  border-radius: 4px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sub-label {
+  font-size: 9px;
+  color: #8b949e;
+  font-family: var(--font-mono);
+}
+
+/* 定標醒目大按鈕 */
+.btn-action-calib {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  background: #1b2636;
+  border-color: #274765;
+  color: #79c0ff;
+}
+
+.btn-action-calib:hover:not(:disabled) {
+  background: #223750;
+  border-color: #388bfd;
+}
+
+.calib-btn-inner {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 600;
+}
+
+.calib-badge {
+  font-size: 9px;
+  background: rgba(56, 189, 248, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  color: #38bdf8;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+}
+
+/* 畸變校正磁貼工具列 (Tool Tiles) */
+.calib-tools-shelf {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.shelf-label {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+}
+
+.calib-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.span-2 {
+  grid-column: span 2;
+}
+
+.btn-tool-tile {
+  background: #141920;
+  border: 1px solid #232a35;
+  border-radius: 4px;
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  height: auto;
+}
+
+.btn-tool-tile:hover:not(:disabled) {
+  background: #1c232d;
+  border-color: #388bfd;
+}
+
+.tile-icon {
+  font-size: 14px;
+  color: #a855f7;
+}
+
+.tile-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.tile-text strong {
+  font-size: 10px;
+  color: #e6edf3;
+}
+
+.tile-text small {
+  font-size: 8.5px;
+  color: #7d8590;
+}
+
+/* 平板專屬頁籤欄（預設在電腦版隱藏） */
+.mobile-tab-bar {
+  display: none;
+}
+
 .step-tag {
   background: rgba(0,0,0,0.3);
   padding: 1px 4px;
@@ -440,18 +563,170 @@ body {
 .inspector-panel {
   grid-column: 2;
   grid-row: 1;
+  background: var(--bg-panel);
   border-left: 1px solid var(--border-dim);
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
+  z-index: 10;
 }
 
+.desktop-only-header .panel-subtitle {
+  font-size: 8px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+/* 滾動內容容器 */
 .inspector-scroll-content {
   flex: 1;
   overflow-y: auto;
   padding: 10px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
+}
+
+/* 現代化卡片容器 (Details Accordion) */
+.config-card {
+  background: #111419;
+  border: 1px solid #1f2732;
+  border-radius: 6px;
+  overflow: hidden;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.config-card[open] {
+  border-color: #273546;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+.card-summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  background: #141920;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid transparent;
+}
+
+.card-summary::-webkit-details-marker {
+  display: none;
+}
+
+.config-card[open] .card-summary {
+  border-bottom-color: #1f2732;
+}
+
+.card-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: #c9d1d9;
+  letter-spacing: 0.05em;
+  font-family: var(--font-mono);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+/* 狀態指示小點 */
+.dot-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.dot-indicator.blue { background: #38bdf8; box-shadow: 0 0 5px rgba(56,189,248,0.6); }
+.dot-indicator.green { background: #3fb950; box-shadow: 0 0 5px rgba(63,185,80,0.6); }
+.dot-indicator.purple { background: #a855f7; box-shadow: 0 0 5px rgba(168,85,247,0.6); }
+
+.card-body {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.mt-sm {
+  margin-top: 4px;
+}
+
+.smart-stepper-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-step {
+  width: 22px;
+  height: 22px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 3px;
+  color: #c9d1d9;
+  font-size: 12px;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.1s ease;
+  user-select: none;
+}
+
+.btn-step:hover {
+  background: #30363d;
+  color: #fff;
+  border-color: #8b949e;
+}
+
+.btn-step:active {
+  background: #161b22;
+  transform: scale(0.95);
+}
+
+.smart-stepper-field input[type="range"] {
+  width: 80px;
+  height: 5px;
+  appearance: none;
+  background: #272e38;
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+}
+
+.smart-stepper-field input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: var(--accent-cyan);
+  border-radius: 50%;
+  cursor: ew-resize;
+  box-shadow: 0 0 4px rgba(0,0,0,0.8);
+}
+
+.btn-micro-reset {
+  background: transparent;
+  border: none;
+  font-size: 9px;
+  color: #58a6ff;
+  cursor: pointer;
+  padding: 0 2px;
+  text-decoration: underline;
+  opacity: 0.8;
+}
+.btn-micro-reset:hover { opacity: 1; }
+
+.label-with-reset {
+  display: flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .config-group {
@@ -898,4 +1173,131 @@ body {
   border-radius: 3px;
   padding: 1px 4px;
   font-weight: 800;
+}
+
+/* ==========================================================================
+   📱 直式平板與中小螢幕響應式佈局 (Tablet Portrait Media Query)
+   適用比例：iPad / Android 平板直向 (寬度 1024px 以下)
+   ========================================================================== */
+
+@media (max-width: 1024px) and (orientation: portrait), (max-width: 900px) {
+
+  /* 1. 將工作空間重設為「上下兩層式」 */
+  .workbench-workspace {
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 32px - 52px - 26px); /* 扣除標題列、Ribbon、狀態列 */
+    overflow: hidden;
+  }
+
+  /* 2. 上方畫布監視器：佔用約 45% ~ 50% 垂直高度，確保影像清晰 */
+  .viewport-panel {
+    flex: 0 0 46vh;
+    min-height: 280px;
+    border-bottom: 2px solid var(--border-dim);
+  }
+
+  /* 3. 顯示平板頁籤切換器 */
+  .desktop-only-header {
+    display: none;
+  }
+
+  .mobile-tab-bar {
+    display: flex;
+    background: #0f141c;
+    border-bottom: 1px solid var(--border-dim);
+    height: 36px;
+    flex-shrink: 0;
+  }
+
+  .m-tab-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: #8b949e;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .m-tab-btn.active {
+    color: #38bdf8;
+    border-bottom-color: #38bdf8;
+    background: rgba(56, 189, 248, 0.05);
+  }
+
+  /* 4. 下方容器：控制台與圖表共用剩餘空間 (透過 Tabs 切換) */
+  .inspector-panel {
+    flex: 1;
+    border-left: none;
+    height: auto;
+    display: flex;
+  }
+
+  .charts-panel {
+    display: none; /* 平板直式下，預設由頁籤控制顯示哪一個 */
+    flex: 1;
+    border-top: none;
+    height: auto;
+  }
+
+  /* 當切換到圖表標籤時的展示切換 */
+  .charts-panel.tab-active {
+    display: flex;
+  }
+
+  .inspector-panel.tab-hidden {
+    display: none;
+  }
+
+  /* 5. 針對觸控觸發友善加大 (Touch Target Ergonomics) */
+  .smart-stepper-field input[type="range"] {
+    width: 110px; /* 平板寬度足夠，加長滑桿好拉動 */
+    height: 8px;
+  }
+
+  .btn-step {
+    width: 32px;
+    height: 32px;
+    font-size: 15px;
+  }
+
+  .val-badge {
+    min-width: 42px;
+    font-size: 11px;
+    padding: 3px 6px;
+  }
+
+  .btn-action-calib {
+    height: 40px;
+  }
+
+  .btn-tool-tile {
+    padding: 10px;
+  }
+
+  /* Ribbon 工具列橫向流暢滑動 */
+  .action-ribbon {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 0 8px;
+  }
+
+  .ribbon-controls .btn-tool {
+    height: 32px;
+    padding: 0 10px;
+  }
+
+  /* 圖表在平板直式下轉為垂直堆疊或平滑捲動 */
+  .charts-subgrid {
+    grid-template-columns: 1fr;
+    grid-template-rows: repeat(3, 160px);
+    overflow-y: auto;
+  }
 }
