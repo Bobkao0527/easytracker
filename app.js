@@ -9,6 +9,7 @@ import { addLine, addAngle, hitTestLine, drawGeometryGizmos, calculateAngleBetwe
 
 let video, canvas, ctx;
 let mode = 'idle'; // 'idle' | 'calibrate' | 'selectTarget' | 'pausedCorrection' | ...
+let isLastPointerTouch = false;
 
 let isTracking = false;
 let isPaused = false;
@@ -239,7 +240,6 @@ window.onload = () => {
   k1Slider?.addEventListener('input', (e) => {
     const val = parseFloat(e.target.value);
     if (k1Value) k1Value.innerText = val.toFixed(3);
-    // 即時更新畫布畫面與幾何標註
     renderCurrentFrame(true);
     redrawActiveGizmo();
   });
@@ -250,7 +250,6 @@ window.onload = () => {
     renderCurrentFrame(true);
     redrawActiveGizmo();
 
-    // 若已有追蹤軌跡，同步重新計算各點物理座標並重繪圖表
     const targets = getAllTargets();
     const tiltAngle = parseFloat(tiltInput.value) || 0;
     const calPoints = getCalibrationPoints();
@@ -306,13 +305,11 @@ window.onload = () => {
     document.getElementById('status').innerText = `【直立平面校正】請點選已知垂直地面的 ${LINE8_DESCS[0]}`;
   });
 
-  // 多追蹤點按鈕事件
   document.getElementById('btnTrack').addEventListener('click', () => {
     mode = 'selectTarget';
     document.getElementById('status').innerText = '【新增追蹤點】請在畫布上點選欲追蹤的目標中心';
   });
 
-  // 合併監聽器：確認後連同幾何狀態與圖表一併清空
   document.getElementById('btnClearTargets')?.addEventListener('click', () => {
     if (confirm('確定要清除所有追蹤點與幾何連線嗎？')) {
       resetTrackState();
@@ -326,7 +323,6 @@ window.onload = () => {
     }
   });
 
-  // 幾何工具按鈕事件
   document.getElementById('btnCreateLine')?.addEventListener('click', () => {
     mode = 'createLine';
     pendingLineP1 = null;
@@ -349,9 +345,10 @@ window.onload = () => {
 
   initPlaybackEvents();
 
-  canvas.addEventListener('mousedown', handleCanvasMouseDown);
-  canvas.addEventListener('mousemove', handleCanvasMouseMove);
-  canvas.addEventListener('mouseup', handleCanvasMouseUp);
+  // 改用 Pointer Events 監聽以支援 Apple Pencil，並過濾手指觸控
+  canvas.addEventListener('pointerdown', handleCanvasPointerDown);
+  canvas.addEventListener('pointermove', handleCanvasPointerMove);
+  canvas.addEventListener('pointerup', handleCanvasPointerUp);
   canvas.addEventListener('click', handleCanvasClick);
 };
 
@@ -444,7 +441,14 @@ function redrawActiveGizmo() {
   drawGeometryGizmos(ctx, getAllTargets(), getPxPerMeter());
 }
 
-function handleCanvasMouseDown(e) {
+function handleCanvasPointerDown(e) {
+  // 手指觸控交給 zoomPan.js 處理縮放與平移，此處直接略過
+  if (e.pointerType === 'touch') {
+    isLastPointerTouch = true;
+    return;
+  }
+  isLastPointerTouch = false;
+
   const { x, y } = getCanvasCoords(e);
   mouseDownPos = { x, y };
   hasMovedDuringDrag = false;
@@ -463,12 +467,19 @@ function handleCanvasMouseDown(e) {
       if (active && active.center) {
         dragOffset = { x: x - active.center.cx, y: y - active.center.cy };
       }
+      // 鎖定指標避免 Apple Pencil 快速拖曳時移出畫布失去焦點
+      try {
+        canvas.setPointerCapture(e.pointerId);
+      } catch (err) {}
       return;
     }
   }
 }
 
-function handleCanvasMouseMove(e) {
+function handleCanvasPointerMove(e) {
+  // 手指觸控不觸發游標檢測與拖曳
+  if (e.pointerType === 'touch') return;
+
   const { x, y } = getCanvasCoords(e);
 
   if (activeDragMode) {
@@ -502,7 +513,7 @@ function handleCanvasMouseMove(e) {
     return;
   }
 
-  // 滑鼠懸浮樣式檢測
+  // 滑鼠 / Apple Pencil 懸浮樣式檢測
   if (getAllTargets().length > 0 && (!isTracking || mode === 'pausedCorrection')) {
     const hit = hitTestHandles(x, y, canvas.width, canvas.height);
     canvas.style.cursor = hit ? hit.cursor : 'default';
@@ -511,8 +522,16 @@ function handleCanvasMouseMove(e) {
   }
 }
 
-function handleCanvasMouseUp() {
+function handleCanvasPointerUp(e) {
+  if (e.pointerType === 'touch') return;
+
   if (activeDragMode) {
+    try {
+      if (canvas.hasPointerCapture(e.pointerId)) {
+        canvas.releasePointerCapture(e.pointerId);
+      }
+    } catch (err) {}
+
     const active = getActiveTarget();
     if (active && active.center) {
       renderCurrentFrame(false);
@@ -531,6 +550,12 @@ function handleCanvasMouseUp() {
 }
 
 function handleCanvasClick(e) {
+  // 若為手指觸控或前一次為手指操作（過濾 Safari 合成點擊），直接忽略
+  if (isLastPointerTouch || e.pointerType === 'touch') {
+    isLastPointerTouch = false;
+    return;
+  }
+
   if (hasMovedDuringDrag) {
     hasMovedDuringDrag = false;
     return;
