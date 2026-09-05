@@ -1135,21 +1135,37 @@ body {
 
 @media (max-width: 1024px) and (orientation: portrait), (max-width: 900px) {
 
+  /* 頂部操作帶支援橫向輕滑，避免按鈕被裁切 */
+  .action-ribbon {
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    flex-wrap: nowrap;
+  }
+  .action-ribbon::-webkit-scrollbar {
+    height: 0px; /* 隱藏捲軸保持乾淨 */
+  }
+
+  /* 主工作區改為純 Flex 直式流，自動填滿剩餘高度 */
   .workbench-workspace {
     display: flex;
     flex-direction: column;
-    height: calc(100vh - 32px - 52px - 26px);
+    flex: 1 1 0%;
+    min-height: 0;
+    height: auto;
     overflow: hidden;
+    background-color: var(--bg-app);
   }
 
-  /* 上方監視器維持高度 */
+  /* 1. 視訊監視器：適度高度，保留充足操作空間給下方面板 */
   .viewport-panel {
-    flex: 0 0 45vh;
-    min-height: 260px;
+    flex: 0 0 38vh;
+    min-height: 220px;
+    max-height: 42vh;
     border-bottom: 2px solid var(--border-dim);
   }
 
-  /* 釘在中間的切換頁籤欄 */
+  /* 2. 釘在中間的切換頁籤欄 */
   .mobile-tab-bar {
     display: flex;
     background: #0d1117;
@@ -1182,33 +1198,66 @@ body {
     border-bottom-color: #38bdf8;
   }
 
-  /* 隱藏桌機版控制台專用頂條 */
   .desktop-only-header {
     display: none;
   }
 
-  /* 下方切換控制：控制台 vs 圖表 */
+  /* 3. 控制台面板修復：使用 flex: 1 佔滿下半部，由內層負責捲動 */
   .inspector-panel {
-    flex: 1;
-    border-left: none;
+    flex: 1 1 0%;
     min-height: 0;
-    height: 100%;
+    height: auto; /* 移除 height: 100% 避免高度計算衝突 */
+    border-left: none;
     display: flex;
+    flex-direction: column;
     overflow: hidden;
   }
 
-  .charts-panel {
-    display: none;
-    flex: 1;
-    border-top: none;
-    min-height: 0;
-  }
-  
   .inspector-scroll-content {
-    padding-bottom: 60px; /* 平板直式底部拇指操作空間 */
+    flex: 1 1 0%;
+    min-height: 0;
+    height: auto;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+    padding: 12px;
+    padding-bottom: 40px; /* 留出底部留白，方便手指觸摸 */
   }
 
-  /* 狀態切換 Class */
+  /* 4. 圖表分析面板：改為「直向清單 (Vertical List)」堆疊 */
+  .charts-panel {
+    display: none;
+    flex: 1 1 0%;
+    min-height: 0;
+    height: auto;
+    border-top: none;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* 圖表由三欄橫排轉為垂直直向捲動 List */
+  .charts-subgrid {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 0%;
+    min-height: 0;
+    height: auto;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    gap: 12px;
+    padding: 10px;
+    background-color: var(--bg-canvas);
+  }
+
+  /* 每個圖表卡片給予足夠波形觀察高度 */
+  .chart-box {
+    flex: 0 0 240px; /* 固定高度列表項目 */
+    min-height: 220px;
+    border: 1px solid var(--border-dim);
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  }
+
+  /* 分頁切換顯隱狀態 */
   .inspector-panel.tab-hidden {
     display: none !important;
   }
