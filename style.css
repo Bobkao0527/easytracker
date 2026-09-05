@@ -490,6 +490,7 @@ body {
 
 /* 現代化卡片容器 (Details Accordion) */
 .config-card {
+  flex-shrink: 0;
   background: #111419;
   border: 1px solid #1f2732;
   border-radius: 6px;
@@ -1216,11 +1217,14 @@ body {
   .inspector-scroll-content {
     flex: 1 1 0%;
     min-height: 0;
-    height: auto;
-    overflow-y: auto !important;
+    overflow-y: auto;
+    overflow-x: hidden;
     -webkit-overflow-scrolling: touch;
-    padding: 12px;
-    padding-bottom: 40px; /* 留出底部留白，方便手指觸摸 */
+    overscroll-behavior-y: contain;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 10px 60px 10px;
   }
 
   /* 4. 圖表分析面板：改為「直向清單 (Vertical List)」堆疊 */
