@@ -34,23 +34,37 @@
   user-select: none;
 }
 
+html, body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
 body {
   background-color: var(--bg-app);
   color: var(--text-primary);
   font-family: var(--font-sans);
-  height: 100vh;
+  
+  /* 關鍵修正：透過 fixed inset 強制撐滿真實物理螢幕，消滅黑邊 */
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+
   overflow: hidden;
   font-size: 12px;
   line-height: 1.4;
   -webkit-font-smoothing: antialiased;
 }
 
-/* 主視窗框架 (Desktop Dock Shell) */
 .desktop-shell {
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  width: 100vw;
+  width: 100%;   /* 不要用 100vw */
+  height: 100%;  /* 不要用 100vh */
   overflow: hidden;
 }
 
