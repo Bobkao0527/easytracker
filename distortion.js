@@ -201,3 +201,32 @@ export function renderDistortedVideo(videoElement, targetCtx, k1 = 0) {
     return false;
   }
 }
+
+/**
+ * 直接從 WebGL 離屏緩衝區讀取局部 ROI 像素（免經 2D Canvas，消滅跨 context 拷貝與 Stall）
+ * @param {number} x
+ * @param {number} y
+ * @param {number} w
+ * @param {number} h
+ * @returns {Uint8Array|null}
+ */
+export function readDistortedRoiPixels(x, y, w, h) {
+  if (!gl || !offscreenCanvas) return null;
+  const buf = new Uint8Array(w * h * 4);
+  // WebGL 座標系 Y 軸朝上，Canvas 2D Y 軸朝下
+  const glY = offscreenCanvas.height - y - h;
+  gl.readPixels(x, glY, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+
+  // 垂直反轉還原為 Canvas 2D 上至下行序
+  const rowBytes = w * 4;
+  const tempRow = new Uint8Array(rowBytes);
+  const halfH = Math.floor(h / 2);
+  for (let r = 0; r < halfH; r++) {
+    const topIdx = r * rowBytes;
+    const btmIdx = (h - 1 - r) * rowBytes;
+    tempRow.set(buf.subarray(topIdx, topIdx + rowBytes));
+    buf.set(buf.subarray(btmIdx, btmIdx + rowBytes), topIdx);
+    buf.set(tempRow, btmIdx);
+  }
+  return buf;
+}

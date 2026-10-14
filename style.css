@@ -316,11 +316,34 @@ body {
   background-size: 20px 20px;
 }
 
-.viewport-canvas-wrapper canvas {
+/* 雙層畫布容器：負責縮放平移並鎖死兩層相對位置 */
+.canvas-stage {
+  position: relative;
   margin: auto;
+  transform-origin: 0 0;
+  display: inline-block;
+  line-height: 0;
+}
+
+.canvas-stage canvas {
+  display: block;
+}
+
+/* 底層畫布：專心承載視訊畫面與 WebGL 去畸變影像 */
+#canvasOutput {
   box-shadow: 0 0 30px rgba(0,0,0,0.8);
   border: 1px solid #1b222d;
   cursor: crosshair;
+}
+
+/* 頂層畫布：透明背景 HUD，繪製追蹤點、線條、角度，不被底圖沖洗，手勢穿透到底層 */
+#overlayCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 
 /* HUD 追蹤遺失校正警報列 */

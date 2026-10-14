@@ -338,6 +338,7 @@ export function drawAllGizmos(ctx, lostTargetId = null, showHandles = true) {
 export async function runAutoTrack({
   video,
   canvas,
+  overlayCanvas = null,
   pxPerMeter,
   threshold = 0.55,
   renderFrame,
@@ -350,6 +351,7 @@ export async function runAutoTrack({
   if (targets.length === 0 || !video) return;
 
   const ctx = canvas.getContext('2d');
+  const overlayCtx = overlayCanvas ? overlayCanvas.getContext('2d') : ctx;
   const fps = 30;
   const frameDuration = 1 / fps;
   let frameIdx = Math.round(startTime * fps);
@@ -401,7 +403,6 @@ export async function runAutoTrack({
 
       if (sW >= tSize && sH >= tSize && target.templatePatch) {
         const searchImgData = ctx.getImageData(sX, sY, sW, sH);
-        // 使用 slice 複製 ArrayBuffer 作為 Transferable 零拷貝轉移
         const searchBuffer = searchImgData.data.buffer.slice(0);
         tasks.push({
           targetId: target.id,
@@ -412,6 +413,8 @@ export async function runAutoTrack({
         });
         taskMetaMap.set(target.id, { sX, sY, halfT, origCx: cx, origCy: cy });
       }
+
+
     }
     const tRoi1 = performance.now();
 
@@ -518,9 +521,12 @@ export async function runAutoTrack({
       currentFrameData.targets[target.id] = ptRecord;
     }
 
-    // 5. 繪製標註 Gizmo（底圖已在畫布上，無需二次重畫底圖）
-    drawAllGizmos(ctx, null, false);
-    drawGeometryGizmos(ctx, targets, pxPerMeter);
+    // 5. 繪製標註 Gizmo（繪製在獨立頂層透明畫布上，不干擾底圖，徹底杜絕頻閃）
+    if (overlayCanvas) {
+      overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    }
+    drawAllGizmos(overlayCtx, null, false);
+    drawGeometryGizmos(overlayCtx, targets, pxPerMeter);
 
     if (onFrameUpdate) onFrameUpdate(currentFrameData, targets);
     const tRen1 = performance.now();

@@ -7,7 +7,7 @@ import { initZoomPan, resetZoomPan, zoomTo, getZoomLevel } from './zoomPan.js';
 import { initDistortionRenderer, renderDistortedVideo, setHomographyMatrix } from './distortion.js';
 import { addLine, addAngle, hitTestLine, drawGeometryGizmos, calculateAngleBetweenLines, getLineEndpoints, getAllLines, getAllAngles, resetGeometryState} from './geometry.js';
 
-let video, canvas, ctx;
+let video, canvas, ctx, overlayCanvas, overlayCtx;
 let mode = 'idle'; // 'idle' | 'calibrate' | 'selectTarget' | 'pausedCorrection' | ...
 let isLastPointerTouch = false;
 
@@ -175,6 +175,8 @@ window.onload = () => {
   video = document.getElementById('videoElement');
   canvas = document.getElementById('canvasOutput');
   ctx = canvas.getContext('2d');
+  overlayCanvas = document.getElementById('overlayCanvas');
+  overlayCtx = overlayCanvas ? overlayCanvas.getContext('2d') : null;
 
   timeSlider = document.getElementById('timeSlider');
   timeDisplay = document.getElementById('timeDisplay');
@@ -448,10 +450,18 @@ function getCanvasCoords(e) {
   };
 }
 
-function redrawActiveGizmo() {
-  renderCurrentFrame(true);
-  drawAllGizmos(ctx, lostTargetObj ? lostTargetObj.id : null, true);
-  drawGeometryGizmos(ctx, getAllTargets(), getPxPerMeter());
+function redrawActiveGizmo(withBottomRedraw = false) {
+  if (withBottomRedraw) {
+    renderCurrentFrame(true);
+  }
+  const drawCtx = overlayCtx || ctx;
+  if (overlayCtx && overlayCanvas) {
+    overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+  } else if (!withBottomRedraw) {
+    renderCurrentFrame(true);
+  }
+  drawAllGizmos(drawCtx, lostTargetObj ? lostTargetObj.id : null, true);
+  drawGeometryGizmos(drawCtx, getAllTargets(), getPxPerMeter());
 }
 
 function handleCanvasPointerDown(e) {
@@ -676,19 +686,20 @@ function handle8PointClick(x, y) {
   // 兩兩成線時，繪製對應線段並標註類別
   if (count % 2 === 0) {
     const pPrev = perspective8Points[count - 2];
-    ctx.save();
-    ctx.strokeStyle = strokeColor;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(pPrev.x, pPrev.y);
-    ctx.lineTo(x, y);
-    ctx.stroke();
+    const drawCtx = overlayCtx || ctx;
+    drawCtx.save();
+    drawCtx.strokeStyle = strokeColor;
+    drawCtx.lineWidth = 1.5;
+    drawCtx.beginPath();
+    drawCtx.moveTo(pPrev.x, pPrev.y);
+    drawCtx.lineTo(x, y);
+    drawCtx.stroke();
 
     const tagText = isVerticalGroup ? `鉛直線 ${count / 2}` : `水平線 ${(count - 4) / 2}`;
-    ctx.fillStyle = strokeColor;
-    ctx.font = '11px monospace';
-    ctx.fillText(tagText, (pPrev.x + x) / 2 + 5, (pPrev.y + y) / 2 - 5);
-    ctx.restore();
+    drawCtx.fillStyle = strokeColor;
+    drawCtx.font = '11px monospace';
+    drawCtx.fillText(tagText, (pPrev.x + x) / 2 + 5, (pPrev.y + y) / 2 - 5);
+    drawCtx.restore();
   }
 
   if (count < 8) {
@@ -874,6 +885,10 @@ function handleVideoUpload(e) {
   video.onloadeddata = () => {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
+    if (overlayCanvas) {
+      overlayCanvas.width = video.videoWidth;
+      overlayCanvas.height = video.videoHeight;
+    }
 
     if (timeSlider) {
       timeSlider.max = video.duration;
@@ -1010,6 +1025,7 @@ async function startAutoTrack() {
     await runAutoTrack({
       video,
       canvas,
+      overlayCanvas,
       pxPerMeter,
       threshold,
       startTime: currentSeekTime,
@@ -1285,15 +1301,16 @@ function handleCalibrationClick(x, y) {
 }
 
 function drawDot(x, y, color) {
-  ctx.save();
-  ctx.fillStyle = color;
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.arc(x, y, 2.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
-  ctx.restore();
+  const drawCtx = overlayCtx || ctx;
+  drawCtx.save();
+  drawCtx.fillStyle = color;
+  drawCtx.strokeStyle = '#ffffff';
+  drawCtx.lineWidth = 1;
+  drawCtx.beginPath();
+  drawCtx.arc(x, y, 2.5, 0, Math.PI * 2);
+  drawCtx.fill();
+  drawCtx.stroke();
+  drawCtx.restore();
 }
 
 function handle4PointClick(x, y) {
@@ -1301,22 +1318,23 @@ function handle4PointClick(x, y) {
   const count = rectCorners.length;
   drawDot(x, y, '#38bdf8');
 
+  const drawCtx = overlayCtx || ctx;
   if (count > 1) {
-    ctx.strokeStyle = '#38bdf8';
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.moveTo(rectCorners[count - 2].x, rectCorners[count - 2].y);
-    ctx.lineTo(rectCorners[count - 1].x, rectCorners[count - 1].y);
-    ctx.stroke();
+    drawCtx.strokeStyle = '#38bdf8';
+    drawCtx.lineWidth = 1.2;
+    drawCtx.beginPath();
+    drawCtx.moveTo(rectCorners[count - 2].x, rectCorners[count - 2].y);
+    drawCtx.lineTo(rectCorners[count - 1].x, rectCorners[count - 1].y);
+    drawCtx.stroke();
   }
 
   if (count < 4) {
     document.getElementById('status').innerText = `【4點矩形透視校正】請點選參考矩形的 ${CORNER_NAMES[count]} (${count + 1}/4)`;
   } else {
-    ctx.beginPath();
-    ctx.moveTo(rectCorners[3].x, rectCorners[3].y);
-    ctx.lineTo(rectCorners[0].x, rectCorners[0].y);
-    ctx.stroke();
+    drawCtx.beginPath();
+    drawCtx.moveTo(rectCorners[3].x, rectCorners[3].y);
+    drawCtx.lineTo(rectCorners[0].x, rectCorners[0].y);
+    drawCtx.stroke();
 
     try {
       const result = calculateHomographyFrom4Points(rectCorners, canvas.width, canvas.height);

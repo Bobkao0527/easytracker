@@ -14,16 +14,22 @@ let initialTouchCenterContent = { x: 0, y: 0 }; // 雙指中心在 Canvas 內容
 let initialGestureZoom = 1.0;
 let gestureCenter = { x: 0, y: 0 };
 
-export function initZoomPan(canvas, onTransformChange) {
+function getTransformTarget() {
+  return document.getElementById('canvasStage') || document.getElementById('canvasOutput');
+}
+
+export function initZoomPan(el, onTransformChange) {
   if (typeof onTransformChange === 'function') {
     onTransformCallback = onTransformChange;
   }
-  const container = canvas.parentElement;
+  const target = document.getElementById('canvasStage') || el;
+  if (!target) return;
+  const container = target.closest('.viewport-canvas-wrapper') || target.parentElement;
   if (!container) return;
 
   container.style.overflow = 'hidden';
   container.style.position = 'relative';
-  canvas.style.transformOrigin = '0 0';
+  target.style.transformOrigin = '0 0';
 
   // ==========================================
   // 1. 筆電觸控板 (Trackpad) 與滾輪事件處理
@@ -42,7 +48,7 @@ export function initZoomPan(canvas, onTransformChange) {
       // 觸控板雙指平移 (Two-finger Pan)
       panX -= e.deltaX;
       panY -= e.deltaY;
-      applyTransform(canvas);
+      applyTransform(target);
     }
   }, { passive: false });
 
@@ -110,7 +116,7 @@ export function initZoomPan(canvas, onTransformChange) {
         panX = currentCenterX - initialTouchCenterContent.x * zoomLevel;
         panY = currentCenterY - initialTouchCenterContent.y * zoomLevel;
 
-        applyTransform(canvas);
+        applyTransform(target);
       }
     }
   }, { passive: false });
@@ -120,10 +126,10 @@ export function initZoomPan(canvas, onTransformChange) {
 // 核心縮放演算法：以 (pivotX, pivotY) 為原點縮放
 // ==========================================
 export function zoomTo(targetZoom, pivotX, pivotY) {
-  const canvas = document.getElementById('canvasOutput');
-  if (!canvas) return;
+  const target = getTransformTarget();
+  if (!target) return;
 
-  const container = canvas.parentElement;
+  const container = target.closest('.viewport-canvas-wrapper') || target.parentElement;
   
   // 若未指定中心點，預設使用容器視窗中心
   if (pivotX === undefined || pivotY === undefined) {
@@ -141,7 +147,7 @@ export function zoomTo(targetZoom, pivotX, pivotY) {
   panY = pivotY - (pivotY - panY) * scaleRatio;
   zoomLevel = newZoom;
 
-  applyTransform(canvas);
+  applyTransform(target);
 }
 
 export function setZoom(level, pivotX, pivotY) {
@@ -153,25 +159,25 @@ export function resetZoomPan() {
   zoomLevel = 1.0;
   panX = 0;
   panY = 0;
-  const canvas = document.getElementById('canvasOutput');
-  if (canvas) applyTransform(canvas);
+  const target = getTransformTarget();
+  if (target) applyTransform(target);
 }
 
-function clampPan(canvas) {
-  if (!canvas) return;
-  const container = canvas.parentElement;
+function clampPan(target) {
+  if (!target) return;
+  const container = target.closest('.viewport-canvas-wrapper') || target.parentElement;
   if (!container) return;
 
   const containerWidth = container.clientWidth;
   const containerHeight = container.clientHeight;
   if (!containerWidth || !containerHeight) return;
 
-  // 取得 Canvas 實際寬高與縮放後的佔用尺寸
-  const canvasWidth = canvas.offsetWidth || canvas.width || containerWidth;
-  const canvasHeight = canvas.offsetHeight || canvas.height || containerHeight;
+  // 取得目標元素實際寬高與縮放後的佔用尺寸
+  const targetWidth = target.offsetWidth || target.width || containerWidth;
+  const targetHeight = target.offsetHeight || target.height || containerHeight;
 
-  const scaledWidth = canvasWidth * zoomLevel;
-  const scaledHeight = canvasHeight * zoomLevel;
+  const scaledWidth = targetWidth * zoomLevel;
+  const scaledHeight = targetHeight * zoomLevel;
 
   // 設定至少要在視窗內留下的可見寬高 (最多留 100px 或 Canvas 縮放尺寸的一半)
   const minVisibleX = Math.min(100, scaledWidth * 0.5);
@@ -189,11 +195,14 @@ function clampPan(canvas) {
   panY = Math.max(minPanY, Math.min(maxPanY, panY));
 }
 
-export function applyTransform(canvas) {
-  // 繪製前先更新並限制 panX / panY
-  clampPan(canvas);
+export function applyTransform(target) {
+  const targetEl = target || getTransformTarget();
+  if (!targetEl) return;
 
-  canvas.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomLevel})`;
+  // 繪製前先更新並限制 panX / panY
+  clampPan(targetEl);
+
+  targetEl.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomLevel})`;
   const zoomDisplay = document.getElementById('zoomDisplay');
   if (zoomDisplay) zoomDisplay.innerText = `${Math.round(zoomLevel * 100)}%`;
 
