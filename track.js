@@ -1,5 +1,7 @@
 // track.js
 import { drawGeometryGizmos } from './geometry.js';
+import { matchTemplateNCCIntegral } from './ncc.js';
+import { globalWorkerPool } from './workerPool.js';
 let targets = []; // 存儲所有追蹤目標物件
 let activeTargetId = null;
 let defaultSearchRadius = 60;
@@ -133,63 +135,11 @@ export function addTargetPoint(x, y, ctx, size = 32) {
   return newTarget;
 }
 
-// NCC 模板匹配演算法
-function matchTemplateNCC(searchData, searchW, searchH, tpl) {
-  const tW = tpl.width;
-  const tH = tpl.height;
-  const tData = tpl.data;
-  const tNorm = tpl.norm;
-
-  const sGray = new Float32Array(searchW * searchH);
-  for (let i = 0; i < sGray.length; i++) {
-    const idx = i << 2;
-    sGray[i] = 0.299 * searchData.data[idx] + 0.587 * searchData.data[idx + 1] + 0.114 * searchData.data[idx + 2];
-  }
-
-  let bestScore = -1;
-  let bestX = -1;
-  let bestY = -1;
-
-  const maxOffsetX = searchW - tW;
-  const maxOffsetY = searchH - tH;
-
-  for (let y = 0; y <= maxOffsetY; y++) {
-    for (let x = 0; x <= maxOffsetX; x++) {
-      let sum = 0;
-      let sVar = 0;
-      let cross = 0;
-
-      for (let ty = 0; ty < tH; ty++) {
-        const row = (y + ty) * searchW + x;
-        for (let tx = 0; tx < tW; tx++) {
-          sum += sGray[row + tx];
-        }
-      }
-      const sMean = sum / (tW * tH);
-
-      for (let ty = 0; ty < tH; ty++) {
-        const row = (y + ty) * searchW + x;
-        const tRow = ty * tW;
-        for (let tx = 0; tx < tW; tx++) {
-          const sVal = sGray[row + tx] - sMean;
-          sVar += sVal * sVal;
-          cross += sVal * tData[tRow + tx];
-        }
-      }
-
-      const sNorm = Math.sqrt(sVar) || 1e-5;
-      const ncc = cross / (tNorm * sNorm);
-
-      if (ncc > bestScore) {
-        bestScore = ncc;
-        bestX = x;
-        bestY = y;
-      }
-    }
-  }
-
-  return { score: bestScore, x: bestX, y: bestY };
+// NCC 模板匹配演算法（調用高性能積分圖引擎）
+export function matchTemplateNCC(searchData, searchW, searchH, tpl) {
+  return matchTemplateNCCIntegral(searchData, searchW, searchH, tpl);
 }
+
 
 export function seekTo(video, time) {
   return new Promise(resolve => {
@@ -384,7 +334,7 @@ export function drawAllGizmos(ctx, lostTargetId = null, showHandles = true) {
   }
 }
 
-// 多目標自動追蹤主迴圈
+// 多目標自動追蹤主迴圈（結合 Web Worker 多執行緒、Wasm/積分圖與雙緩衝管線重疊）
 export async function runAutoTrack({
   video,
   canvas,
@@ -404,27 +354,40 @@ export async function runAutoTrack({
   const frameDuration = 1 / fps;
   let frameIdx = Math.round(startTime * fps);
 
+  // 雙緩衝管線：預先發起下一幀解碼的 Promise
+  let nextSeekPromise = null;
+  let profSeek = 0, profRoi = 0, profWork = 0, profRen = 0, profCount = 0;
+
+  // 確保首幀 seek 就緒
+  await seekTo(video, startTime);
+
   for (let t = startTime; t < video.duration; t += frameDuration) {
     if (typeof isTrackingCheck === 'function' && !isTrackingCheck()) {
       break;
     }
 
-    await seekTo(video, t);
+    // 1. 等待上一幀預先發起的解碼就緒
+    const tSeek0 = performance.now();
+    if (nextSeekPromise) {
+      await nextSeekPromise;
+      nextSeekPromise = null;
+    } else if (Math.abs(video.currentTime - t) > 0.002) {
+      await seekTo(video, t);
+    }
+    const tSeek1 = performance.now();
 
-    // 渲染基礎無標註影格以擷取影像像素
+    // 2. 渲染單次底圖（含網格）以擷取影像像素，避免重複二次渲染
+    const tRoi0 = performance.now();
     if (typeof renderFrame === 'function') {
-      renderFrame(false);
+      renderFrame(true);
     } else {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     }
 
-    const currentFrameData = {
-      frame: frameIdx,
-      time: t.toFixed(3),
-      targets: {}
-    };
+    // 收集所有目標點的並行匹配任務
+    const tasks = [];
+    const taskMetaMap = new Map();
 
-    // 同步對所有目標點執行匹配
     for (const target of targets) {
       const { cx, cy } = target.center;
       const radius = target.searchRadius;
@@ -436,11 +399,54 @@ export async function runAutoTrack({
       const sW = Math.min(radius * 2, canvas.width - sX);
       const sH = Math.min(radius * 2, canvas.height - sY);
 
-      let match = { score: -1, x: 0, y: 0 };
       if (sW >= tSize && sH >= tSize && target.templatePatch) {
         const searchImgData = ctx.getImageData(sX, sY, sW, sH);
-        match = matchTemplateNCC(searchImgData, sW, sH, target.templatePatch);
+        // 使用 slice 複製 ArrayBuffer 作為 Transferable 零拷貝轉移
+        const searchBuffer = searchImgData.data.buffer.slice(0);
+        tasks.push({
+          targetId: target.id,
+          searchBuffer,
+          searchW: sW,
+          searchH: sH,
+          templatePatch: target.templatePatch
+        });
+        taskMetaMap.set(target.id, { sX, sY, halfT, origCx: cx, origCy: cy });
       }
+    }
+    const tRoi1 = performance.now();
+
+    // 3. 派發至 Web Worker 執行緒池（優先 Wasm SIMD，自動 fallback 積分圖）
+    const tWork0 = performance.now();
+    const matchPromise = globalWorkerPool.dispatchAll(tasks);
+
+    // 雙緩衝管線重疊：在 WorkerPool 計算期間，同步預先發起下一幀解碼！
+    const nextT = t + frameDuration;
+    if (nextT < video.duration && (typeof isTrackingCheck !== 'function' || isTrackingCheck())) {
+      nextSeekPromise = seekTo(video, nextT);
+    }
+
+    // 等待所有質點匹配結果回傳
+    const matchResults = await matchPromise;
+    const tWork1 = performance.now();
+
+    const tRen0 = performance.now();
+    const resultMap = new Map(matchResults.map(r => [r.targetId, r.result]));
+
+    const currentFrameData = {
+      frame: frameIdx,
+      time: t.toFixed(3),
+      targets: {}
+    };
+
+    // 4. 處理各質點新座標與軌跡記錄
+    for (const target of targets) {
+      const meta = taskMetaMap.get(target.id);
+      const match = resultMap.get(target.id) || { score: -1, x: 0, y: 0 };
+      const cx = meta ? meta.origCx : target.center.cx;
+      const cy = meta ? meta.origCy : target.center.cy;
+      const sX = meta ? meta.sX : 0;
+      const sY = meta ? meta.sY : 0;
+      const halfT = meta ? meta.halfT : Math.floor(target.templateSize / 2);
 
       let newCx = cx;
       let newCy = cy;
@@ -453,6 +459,14 @@ export async function runAutoTrack({
       } else {
         // 目標遺失事件回調
         if (typeof onTargetLost === 'function') {
+          // 若有預先發起的下一幀 seek，暫停前先等待並重新回到當前影格顯示
+          if (nextSeekPromise) {
+            await nextSeekPromise;
+            nextSeekPromise = null;
+          }
+          await seekTo(video, t);
+          if (typeof renderFrame === 'function') renderFrame(true);
+
           activeTargetId = target.id;
           const decision = await onTargetLost({
             target,
@@ -469,6 +483,10 @@ export async function runAutoTrack({
             newCx = target.center.cx;
             newCy = target.center.cy;
             finalScore = 1.0;
+          } else if (decision === 'skip') {
+            newCx = cx;
+            newCy = cy;
+            finalScore = match.score >= 0 ? match.score : 0;
           }
         }
       }
@@ -500,13 +518,36 @@ export async function runAutoTrack({
       currentFrameData.targets[target.id] = ptRecord;
     }
 
-    // 重新繪製含疊加 Gizmo 標註
-    if (typeof renderFrame === 'function') renderFrame(true);
+    // 5. 繪製標註 Gizmo（底圖已在畫布上，無需二次重畫底圖）
     drawAllGizmos(ctx, null, false);
     drawGeometryGizmos(ctx, targets, pxPerMeter);
 
     if (onFrameUpdate) onFrameUpdate(currentFrameData, targets);
+    const tRen1 = performance.now();
+
+    // 性能統計報告
+    profSeek += (tSeek1 - tSeek0);
+    profRoi += (tRoi1 - tRoi0);
+    profWork += (tWork1 - tWork0);
+    profRen += (tRen1 - tRen0);
+    profCount++;
+
+    if (profCount % 30 === 0) {
+      console.log(`%c[EasyTracker Profiler (近 30 幀每幀耗時拆解)]
+  • 影片解碼等待 (Seek/Decode): ${(profSeek / profCount).toFixed(2)} ms
+  • 畫布截取 (ROI Extract):      ${(profRoi / profCount).toFixed(2)} ms
+  • 質點計算 (WorkerPool+Wasm):  ${(profWork / profCount).toFixed(2)} ms
+  • 標註圖表 (Gizmo/UI Render):  ${(profRen / profCount).toFixed(2)} ms
+  • 單幀總循環物理耗時:          ${((profSeek + profRoi + profWork + profRen) / profCount).toFixed(2)} ms`, 'color: #06b6d4; font-weight: bold;');
+      profSeek = 0;
+      profRoi = 0;
+      profWork = 0;
+      profRen = 0;
+      profCount = 0;
+    }
+
     frameIdx++;
-    await new Promise(r => setTimeout(r, 0));
+    // 直接讓步下一個微任務，移除固定 clamping 延遲
+    await Promise.resolve();
   }
 }

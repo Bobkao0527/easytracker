@@ -3,7 +3,7 @@ import { resetCalibration, addCalibrationPoint, getPxPerMeter, getCalibrationPoi
 import { resetTrackState, addTargetPoint, getAllTargets, getActiveTarget, setActiveTargetId,removeTarget, setTargetCenter, setSearchRadius, updateTemplatePatch, hitTestHandles, drawAllGizmos, runAutoTrack, seekTo} from './track.js';
 import { initChart, clearChart, renderChart, renderAngleChart } from './chart.js';
 import { exportCSV } from './export.js';
-import { initZoomPan, resetZoomPan} from './zoomPan.js';
+import { initZoomPan, resetZoomPan, zoomTo, getZoomLevel } from './zoomPan.js';
 import { initDistortionRenderer, renderDistortedVideo, setHomographyMatrix } from './distortion.js';
 import { addLine, addAngle, hitTestLine, drawGeometryGizmos, calculateAngleBetweenLines, getLineEndpoints, getAllLines, getAllAngles, resetGeometryState} from './geometry.js';
 
@@ -193,6 +193,17 @@ window.onload = () => {
 
   initZoomPan(canvas);
 
+  // 綁定視圖縮放控制器
+  document.getElementById('btnZoomIn')?.addEventListener('click', () => {
+    zoomTo(getZoomLevel() * 1.25);
+  });
+  document.getElementById('btnZoomOut')?.addEventListener('click', () => {
+    zoomTo(getZoomLevel() / 1.25);
+  });
+  document.getElementById('btnZoomReset')?.addEventListener('click', () => {
+    resetZoomPan();
+  });
+
   document.getElementById('videoInput').addEventListener('change', handleVideoUpload);
 
   const thresholdSlider = document.getElementById('matchThreshold');
@@ -220,7 +231,7 @@ window.onload = () => {
     if (resolveTargetCorrection) {
       document.getElementById('lostTargetBar').style.display = 'none';
       mode = 'idle';
-      resolveTargetCorrection('continue');
+      resolveTargetCorrection('skip');
       resolveTargetCorrection = null;
     }
   });
@@ -314,6 +325,8 @@ window.onload = () => {
     if (confirm('確定要清除所有追蹤點與幾何連線嗎？')) {
       resetTrackState();
       resetGeometryState();
+      currentTargetFilter = 'all';
+      currentAngleFilter = 'all';
       renderCurrentFrame(true);
       updateTargetListUI();
       updateChartFilterUI();
@@ -741,11 +754,11 @@ function updateTargetListUI() {
         return;
       }
       setActiveTargetId(t.id);
+      currentTargetFilter = t.id;
       updateTargetListUI();
+      updateChartFilterUI();
       redrawActiveGizmo();
-      if (t.trajectory && t.trajectory.length) {
-        renderChart(t.trajectory);
-      }
+      renderChart(getAllTargets(), currentTargetFilter);
     });
 
     container.appendChild(chip);
@@ -816,8 +829,23 @@ function handleVideoUpload(e) {
 
   resetCalibration();
   resetTrackState();
+  resetGeometryState();
   resetZoomPan();
+  currentHomography = [1,0,0, 0,1,0, 0,0,1];
+  setHomographyMatrix(currentHomography);
+  currentTargetFilter = 'all';
+  currentAngleFilter = 'all';
+
+  const k1Slider = document.getElementById('k1Distortion');
+  const k1Value = document.getElementById('k1Value');
+  if (k1Slider) k1Slider.value = 0;
+  if (k1Value) k1Value.innerText = '0.000';
+
+  const tiltInput = document.getElementById('tiltAngle');
+  if (tiltInput) tiltInput.value = 0;
+
   updateTargetListUI();
+  updateChartFilterUI();
 
   const scaleDisplay = document.getElementById('scaleDisplay');
   if (scaleDisplay) scaleDisplay.innerText = '1000.00 px/m (預設)';
@@ -1127,7 +1155,7 @@ function updateCurrentFrameData(targetId, cx, cy) {
     item.score = "1.000 (手動修正)";
 
     updateTrackingUI(item, target.trajectory);
-    renderChart(target.trajectory);
+    renderChart(getAllTargets(), currentTargetFilter);
     document.getElementById('status').innerText = `目標 [${target.name}] 第 ${item.frame} 幀已被手動更新！`;
   }
 }
@@ -1231,7 +1259,7 @@ function handleExport() {
       const l1 = lines.find(l => l.id === a.line1Id);
       const l2 = lines.find(l => l.id === a.line2Id);
       if (l1 && l2) {
-        const deg = calculateAngleBetweenLines(l1, l2, targetsAtFrame);
+        const deg = calculateAngleBetweenLines(l1, l2, targetsAtFrame, a);
         row[`Angle_${a.name}_deg`] = deg !== null ? deg.toFixed(2) : '0.00';
       } else {
         row[`Angle_${a.name}_deg`] = '0.00';

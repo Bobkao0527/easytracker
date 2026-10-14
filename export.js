@@ -17,12 +17,14 @@ export function exportCSV(trackingData) {
     csv += line + '\n';
   });
 
-  // 3. 加上 UTF-8 BOM (\uFEFF)，確保 Excel 開啟時中文/特殊字元不會亂碼
   const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = `motion_track_${Date.now()}.csv`;
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+  // 延遲釋放 ObjectURL，確保各瀏覽器 (尤其是 Safari/iOS) 能穩定完成下載
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

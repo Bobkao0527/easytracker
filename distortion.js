@@ -149,7 +149,19 @@ export function setHomographyMatrix(matrix) {
   }
 }
 
+function isIdentityHomography(h) {
+  if (!h || h.length !== 9) return true;
+  return Math.abs(h[0] - 1) < 1e-4 && Math.abs(h[1]) < 1e-4 && Math.abs(h[2]) < 1e-4 &&
+         Math.abs(h[3]) < 1e-4 && Math.abs(h[4] - 1) < 1e-4 && Math.abs(h[5]) < 1e-4 &&
+         Math.abs(h[6]) < 1e-4 && Math.abs(h[7]) < 1e-4 && Math.abs(h[8] - 1) < 1e-4;
+}
+
 export function renderDistortedVideo(videoElement, targetCtx, k1 = 0) {
+  // 若無徑向畸變且透視為單位矩陣，略過 WebGL 著色器，直走原生 Canvas 2D 硬體路徑
+  if (Math.abs(k1) < 1e-5 && isIdentityHomography(currentHomography)) {
+    return false;
+  }
+
   if (!gl || !offscreenCanvas || !program || !texture) return false;
 
   try {

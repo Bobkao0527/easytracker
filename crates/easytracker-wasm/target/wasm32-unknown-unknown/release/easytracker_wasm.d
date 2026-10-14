@@ -1,0 +1,1 @@
+/Users/bobkao/Desktop/Code/VS-Code/easytracker/crates/easytracker-wasm/target/wasm32-unknown-unknown/release/easytracker_wasm.wasm: /Users/bobkao/Desktop/Code/VS-Code/easytracker/crates/easytracker-wasm/src/lib.rs
